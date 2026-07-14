@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv*/
+.python-version
+.uv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+*.local
+
+# Data / models / memory (local-first, never commit user data)
+*.db
+*.sqlite3
+.chroma/
+backend/data/
+backend/app/memory/*.db
+models/
+*.gguf
+*.onnx
+*.bin
+
+# macOS
+.DS_Store
+
+# Xcode / Swift
+frontend/**/*.xcodeproj/xcuserdata/
+frontend/**/xcuserdata/
+frontend/**/.build/
+frontend/**/DerivedData/
+frontend/**/*.xcworkspace/xcuserdata/
+
+# Logs
+*.log
+logs/
+
+# Editors
+.vscode/
+.idea/
