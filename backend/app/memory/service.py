@@ -41,11 +41,19 @@ class MemoryService:
             await self._store.record_turn(
                 session_id, execution.utterance, execution.reply, steps
             )
-            tools_used = ", ".join(step.tool for step in execution.steps) or "no tools"
-            await self._vectors.add_turn(
-                f"User asked: {execution.utterance}\nOutcome ({tools_used}): {execution.reply}",
-                metadata={"session_id": session_id},
-            )
+            # Only ground semantic memory in turns that actually executed a
+            # tool. Storing pure-text replies (greetings, clarifying
+            # questions, and — critically — model hallucinations) let past
+            # fabrications get recalled and parroted back: a feedback loop.
+            # SQLite history above still logs every turn for the record.
+            executed = [step for step in execution.steps if step.result and not step.denied]
+            if executed:
+                tools_used = ", ".join(step.tool for step in executed)
+                await self._vectors.add_turn(
+                    f"User asked: {execution.utterance}\n"
+                    f"Outcome ({tools_used}): {execution.reply}",
+                    metadata={"session_id": session_id},
+                )
         except Exception:  # noqa: BLE001 - memory must never break a turn
             logger.warning("Failed to record turn in memory", exc_info=True)
 

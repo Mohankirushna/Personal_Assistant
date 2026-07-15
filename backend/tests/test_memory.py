@@ -112,6 +112,24 @@ async def test_empty_vector_store_searches_cleanly(vectors: VectorStore) -> None
     assert await vectors.search("anything") == []
 
 
+async def test_ungrounded_turns_not_in_semantic_memory(service: MemoryService) -> None:
+    """A turn that ran no tool (greeting, clarifying question, or a
+    hallucination) is logged in history but NOT stored for semantic recall —
+    otherwise past fabrications get recalled and reinforced."""
+    no_tool_turn = PlanExecution(
+        utterance="open some folder in vs code",
+        reply="Mounted the downloads folder for you.",  # a fabrication
+        steps=[],
+    )
+    await service.record_turn("s1", no_tool_turn)
+
+    # It IS in the history log...
+    history = await service.history()
+    assert any(h.utterance == "open some folder in vs code" for h in history)
+    # ...but it is NOT recalled as grounded context.
+    assert await service.context_for("open a folder in vs code") is None
+
+
 def test_memory_api_and_planner_context(settings: Settings, tmp_path: Path) -> None:
     """Full wiring: a planner turn is recorded, visible in /memory endpoints,
     and recalled into the next turn's system prompt."""

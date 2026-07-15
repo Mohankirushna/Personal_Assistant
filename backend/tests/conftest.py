@@ -47,6 +47,7 @@ class FakeOllamaClient:
         messages: Iterable[Message],
         keep_alive: str | int,
         tools: list[dict] | None = None,
+        options: dict | None = None,
     ) -> ChatTurn:
         self._maybe_fail()
         self.calls.append(("chat_turn", model))

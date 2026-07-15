@@ -93,6 +93,8 @@ class Planner:
         ]
         model = await self._model_manager.ensure_llm()
         tool_specs = self._tool_specs()
+        # Greedy decoding: tool selection must be deterministic, not sampled.
+        options = {"temperature": self._settings.planner_temperature}
 
         for _step in range(max_steps):
             turn = await self._client.chat_turn(
@@ -100,6 +102,7 @@ class Planner:
                 messages=messages,
                 keep_alive=self._settings.llm_keep_alive,
                 tools=tool_specs,
+                options=options,
             )
 
             if not turn.tool_calls and not turn.content.strip():
@@ -120,6 +123,7 @@ class Planner:
                     messages=messages,
                     keep_alive=self._settings.llm_keep_alive,
                     tools=tool_specs,
+                    options=options,
                 )
 
             if not turn.tool_calls:

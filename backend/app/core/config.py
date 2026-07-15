@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # History passed back to the model is trimmed to this many messages to
     # bound prompt size for small quantized models.
     max_history_messages: int = 20
+    # Planning/tool-selection is decoded greedily: on a small model, default
+    # sampling (~0.8) makes tool choice flip between runs for identical
+    # requests. 0.0 = deterministic. Bump slightly if replies feel too flat.
+    planner_temperature: float = 0.0
 
     # Voice
     whisper_model: str = "base.en"

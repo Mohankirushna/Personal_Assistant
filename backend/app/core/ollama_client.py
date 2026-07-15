@@ -76,6 +76,7 @@ class OllamaLike(Protocol):
         messages: Iterable[Message],
         keep_alive: str | int,
         tools: list[dict[str, Any]] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> ChatTurn: ...
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]: ...
@@ -131,10 +132,13 @@ class OllamaClient:
         messages: Iterable[Message],
         keep_alive: str | int,
         tools: list[dict[str, Any]] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> ChatTurn:
         """Chat with native tool-calling: the model's trained function-call
         template is used (far more reliable for qwen2.5 than hand-rolled
-        JSON protocols)."""
+        JSON protocols). `options` maps to Ollama generation options
+        (e.g. temperature) — the planner uses temperature 0 for
+        deterministic tool selection."""
         try:
             response = await self._client.chat(
                 model=model,
@@ -142,6 +146,7 @@ class OllamaClient:
                 stream=False,
                 keep_alive=keep_alive,
                 tools=tools or [],
+                options=options,
             )
         except Exception as exc:  # noqa: BLE001 - translated and re-raised
             raise self._translate(exc, model) from exc
