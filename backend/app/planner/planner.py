@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
+from urllib.parse import unquote
 
 from app.core.config import Settings
 from app.core.model_manager import ModelManager
@@ -49,7 +51,9 @@ via a tool is a lie — do not do it.
 - If no tool fits or the request is unclear, say so or ask; do not pretend.
 - If a tool was denied or failed, tell the user honestly.
 - Only pure conversation (greetings, questions about yourself) skips tools.
-- Keep answers to one or two short sentences; they are often spoken aloud."""
+- Answers are SPOKEN ALOUD: one or two short sentences of plain text. Never \
+use Markdown, links, image syntax, or URL-encoding. Mention file paths \
+exactly as the tool reported them."""
 
 
 def _tool_spec(name: str, description: str, schema: dict[str, Any]) -> dict[str, Any]:
@@ -57,6 +61,21 @@ def _tool_spec(name: str, description: str, schema: dict[str, Any]) -> dict[str,
         "type": "function",
         "function": {"name": name, "description": description, "parameters": schema},
     }
+
+
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def sanitize_spoken_reply(text: str) -> str:
+    """Make a reply speakable: replies are read aloud by TTS, but small
+    models emit Markdown anyway (notably image syntax with URL-encoded
+    screenshot paths) regardless of prompt instructions. Deterministically
+    rewrite link/image syntax to plain text and drop emphasis markers."""
+    text = _MD_IMAGE.sub(lambda m: unquote(m.group(1)), text)
+    text = _MD_LINK.sub(lambda m: m.group(1), text)
+    text = text.replace("**", "").replace("`", "")
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 class Planner:
@@ -150,7 +169,7 @@ class Planner:
                 )
 
             if not turn.tool_calls:
-                reply = turn.content.strip()
+                reply = sanitize_spoken_reply(turn.content)
                 if not reply:
                     # Never fabricate success ("Done.") without tool evidence.
                     reply = (

@@ -67,7 +67,16 @@ class ChatService:
                 confirmer=confirmer,
                 memory_context=memory_context,
             )
-            self._sessions.append(session, "assistant", execution.reply)
+            # Store the reply PLUS a compact trace of what actually ran, so
+            # follow-ups can reference concrete outcomes (file paths, track
+            # names) even when the spoken reply paraphrased them away —
+            # e.g. "open the screenshot you just took" needs the saved path.
+            trace = "".join(
+                f"\n[{step.tool}: {step.result.summary[:160]}]"
+                for step in execution.steps
+                if step.result is not None and step.result.ok
+            )
+            self._sessions.append(session, "assistant", execution.reply + trace)
             if self._memory:
                 await self._memory.record_turn(session.id, execution)
             return execution.reply

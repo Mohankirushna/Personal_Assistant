@@ -247,6 +247,32 @@ def test_rest_chat_denies_destructive(
     assert wipe_tool.executions == []
 
 
+def test_followup_sees_tool_outcomes(
+    settings: Settings, registry: ToolRegistry, echo_tool: EchoTool
+) -> None:
+    """The session history carries a compact trace of executed tools, so a
+    follow-up turn can reference concrete outcomes (paths, names) that the
+    spoken reply paraphrased away."""
+    fake = FakeOllamaClient()
+    fake.queued_turns = [
+        tool_call("echo", text="hello-trace"),
+        respond("Done!"),           # reply that omits the detail
+        respond("It said hello-trace."),
+    ]
+    app = create_app(
+        settings=settings, ollama_client=fake, registry=registry, enable_memory=False
+    )
+    with TestClient(app) as client:
+        first = client.post("/chat", json={"message": "echo hello-trace"}).json()
+        client.post(
+            "/chat",
+            json={"message": "what did it say?", "session_id": first["session_id"]},
+        )
+    # The second turn's prompt history contains the tool trace line.
+    history_texts = [m.get("content", "") for m in fake.chat_messages[-1]]
+    assert any("[echo: echoed 'hello-trace']" in text for text in history_texts)
+
+
 def test_tools_endpoint_lists_registered(settings: Settings, registry: ToolRegistry) -> None:
     app = create_app(
         settings=settings,
@@ -260,3 +286,17 @@ def test_tools_endpoint_lists_registered(settings: Settings, registry: ToolRegis
     assert names == {"echo", "wipe"}
     by_name = {tool["name"]: tool for tool in body}
     assert by_name["wipe"]["risk_level"] == "destructive"
+
+
+def test_sanitize_spoken_reply() -> None:
+    from app.planner.planner import sanitize_spoken_reply
+
+    assert (
+        sanitize_spoken_reply(
+            "Here is your screenshot: ![](Screenshot%202026-07-15%20at%2020.22.19.png)."
+        )
+        == "Here is your screenshot: Screenshot 2026-07-15 at 20.22.19.png."
+    )
+    assert sanitize_spoken_reply("See [the docs](https://example.com).") == "See the docs."
+    assert sanitize_spoken_reply("**Done** — saved to `~/Desktop`.") == "Done — saved to ~/Desktop."
+    assert sanitize_spoken_reply("plain text stays untouched") == "plain text stays untouched"

@@ -19,7 +19,7 @@ def test_discovery_finds_the_whole_suite() -> None:
     names = {tool.name for tool in registry.list()}
     expected = {
         "clock",
-        "finder_search", "finder_list", "finder_create_folder", "finder_move",
+        "finder_search", "finder_list", "finder_create_folder", "finder_move", "open_file",
         "finder_delete", "finder_compress", "finder_extract",
         "terminal_run", "git", "vscode_open",
         "clipboard_read", "clipboard_write",

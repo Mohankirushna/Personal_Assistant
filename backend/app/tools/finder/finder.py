@@ -56,6 +56,43 @@ class FinderSearchTool(Tool):
         return ToolResult(tool=self.name, ok=True, summary=summary, data={"paths": shown})
 
 
+class OpenFileArgs(BaseModel):
+    path: str = Field(
+        description="File or folder to open, e.g. "
+        "'~/Desktop/Screenshot 2026-07-15 at 20.22.19.png'."
+    )
+
+
+class FinderOpenTool(Tool):
+    name: ClassVar[str] = "open_file"
+    description: ClassVar[str] = (
+        "Open a file or folder with its default macOS app (images in Preview, "
+        "PDFs, folders in Finder, …). Use this to open/show/view a file the "
+        "user refers to, e.g. a screenshot that was just taken."
+    )
+    args_model: ClassVar[type[BaseModel]] = OpenFileArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    async def run(self, args: OpenFileArgs) -> ToolResult:  # type: ignore[override]
+        target = expand_path(args.path)
+        if not target.exists() and "%" in args.path:
+            # Models sometimes echo URL-encoded paths ('Screenshot%202026…')
+            # picked up from markdown-ish replies; try the decoded form.
+            from urllib.parse import unquote
+
+            decoded = expand_path(unquote(args.path))
+            if decoded.exists():
+                target = decoded
+        if not target.exists():
+            return ToolResult.failure(self.name, f"{target} does not exist")
+        output = await run_command(["/usr/bin/open", str(target)])
+        if not output.ok:
+            return ToolResult.failure(self.name, f"could not open: {output.combined()}")
+        return ToolResult(
+            tool=self.name, ok=True, summary=f"Opened {target}", data={"path": str(target)}
+        )
+
+
 class ListFolderArgs(BaseModel):
     path: str = Field(description="Folder to list, e.g. '~/Downloads'.")
 
