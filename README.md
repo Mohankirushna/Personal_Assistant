@@ -8,10 +8,10 @@ Optimized for a MacBook Air M2 (8GB RAM). No paid APIs. Works offline for most t
 
 ## Status
 
-**Phase 2 of 10 — Backend online.** The FastAPI backend boots, manages local models
-through the RAM-budget ModelManager, and serves a working chat API (REST + streaming
-WebSocket) against Ollama. See [backend/README.md](backend/README.md) for the
-quickstart and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+**Phase 4 of 10 — Voice online.** Backend chat API + SwiftUI menu-bar app + a full
+local voice loop: "hey jarvis" wake word (openWakeWord), Whisper STT, LLM reply,
+spoken TTS response. See [backend/README.md](backend/README.md) for the quickstart
+and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ## Why
 
@@ -52,8 +52,8 @@ jarvis_v2/
 
 1. ~~Architecture & scaffolding~~ ✅
 2. ~~Backend (FastAPI, Ollama integration, first `/chat` endpoint)~~ ✅
-3. ~~macOS application (SwiftUI shell, permissions, backend IPC)~~ ✅ ← you are here
-4. Voice (wake word, STT, TTS pipeline)
+3. ~~macOS application (SwiftUI shell, permissions, backend IPC)~~ ✅
+4. ~~Voice (wake word, STT, TTS pipeline)~~ ✅ ← you are here
 5. Planner (intent → structured tool-call plan)
 6. Tools (Finder, Terminal, Browser, Git, VS Code, Clipboard, System)
 7. Memory (SQLite + vector store, semantic recall)

@@ -8,6 +8,7 @@ directory. See ``.env.example`` for the full list.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -59,6 +60,20 @@ class Settings(BaseSettings):
     # History passed back to the model is trimmed to this many messages to
     # bound prompt size for small quantized models.
     max_history_messages: int = 20
+
+    # Voice
+    whisper_model: str = "base.en"
+    whisper_compute: str = "int8"
+    wake_word_model: str = "hey_jarvis"
+    wake_threshold: float = 0.5
+    tts_engine: Literal["auto", "piper", "say"] = "auto"
+    piper_voice_path: str | None = None
+    say_voice: str | None = None
+    # Endpointing: an utterance ends after this much trailing silence.
+    vad_silence_ms: int = 800
+    # RMS (on float32 [-1,1]) below which a frame counts as silence.
+    vad_energy_threshold: float = 0.015
+    max_utterance_seconds: float = 15.0
 
     log_level: str = "INFO"
 

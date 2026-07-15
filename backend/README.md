@@ -5,10 +5,9 @@ for the full design.
 
 ## Status
 
-**Phase 2 complete.** The backend boots, talks to local Ollama through the
-ModelManager (single-heavy-model RAM budget), and serves a working chat API.
-Planner/tools/memory/speech modules are still documented stubs for their
-respective phases.
+**Phase 4 complete.** The backend serves chat (REST + streaming WS) and a
+full voice loop (wake word → Whisper STT → LLM → TTS) against local models.
+Planner/tools/memory modules are still documented stubs for their phases.
 
 ## Prerequisites
 
@@ -46,6 +45,26 @@ Interactive API docs (Swagger UI): http://127.0.0.1:8765/docs
 
 Pass `session_id` from a previous response to continue a conversation.
 History is in-memory for now (persistence lands in Phase 7).
+
+### Voice (`uv sync --extra voice`)
+
+| Endpoint | Kind | Purpose |
+|---|---|---|
+| `WS /ws/voice` | WebSocket | stream 16kHz mono PCM16; get wake/transcript/reply events + spoken WAV back |
+| `POST /voice/transcribe` | REST | WAV upload → text (debugging) |
+| `POST /voice/speak` | REST | text → WAV (debugging) |
+
+The wake word is **"hey jarvis"** (openWakeWord pretrained model). STT is
+faster-whisper `base.en` int8 (~200MB resident); TTS is Piper when installed
+(`--extra tts-piper` + `JARVIS_PIPER_VOICE_PATH`), otherwise macOS's built-in
+`say`. Voice endpoints only mount when the voice extra is installed — the
+chat API works without it.
+
+Try it live against a running backend (asks for mic permission):
+
+```bash
+uv run python -m app.speech.mic_demo
+```
 
 ### Auth
 

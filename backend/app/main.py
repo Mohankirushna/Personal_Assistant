@@ -6,6 +6,9 @@ lifespan. Run locally with:
 
     uv run jarvis-backend
     # or: uv run uvicorn app.main:create_app --factory
+
+Voice endpoints are mounted only when the `voice` extra is installed
+(`uv sync --extra voice`); the chat API works without it.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -29,16 +33,31 @@ from app.core.sessions import SessionStore
 logger = logging.getLogger(__name__)
 
 
+def _voice_imports_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        import numpy  # noqa: F401
+        import openwakeword  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def create_app(
     settings: Settings | None = None,
     ollama_client: OllamaLike | None = None,
+    stt: Any | None = None,
+    tts: Any | None = None,
+    wake_detector: Any | None = None,
 ) -> FastAPI:
     """Application factory.
 
-    `settings` and `ollama_client` are injectable for tests; production
-    callers pass nothing and get env-derived settings plus a real client.
+    All service parameters are injectable for tests; production callers pass
+    nothing and get env-derived settings plus real clients/models.
     """
     app_settings = settings or get_settings()
+    overrides_given = stt is not None and tts is not None and wake_detector is not None
+    voice_enabled = overrides_given or _voice_imports_available()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -56,12 +75,28 @@ def create_app(
         app.state.sessions = sessions
         app.state.chat_service = ChatService(client, model_manager, sessions, app_settings)
 
+        if voice_enabled:
+            from app.speech.stt import WhisperSTT
+            from app.speech.wake_word import OpenWakeWord
+            from app.tts.engine import build_tts_engine
+
+            app.state.stt = stt or WhisperSTT(
+                model_name=app_settings.whisper_model,
+                compute_type=app_settings.whisper_compute,
+            )
+            app.state.tts = tts or build_tts_engine(app_settings)
+            app.state.wake_detector = wake_detector or OpenWakeWord(
+                model_name=app_settings.wake_word_model,
+                threshold=app_settings.wake_threshold,
+            )
+
         logger.info(
-            "Backend ready on %s:%s (llm=%s, auth=%s)",
+            "Backend ready on %s:%s (llm=%s, auth=%s, voice=%s)",
             app_settings.host,
             app_settings.port,
             app_settings.active_llm_model,
             "on" if app_settings.auth_token else "off",
+            "on" if voice_enabled else "off (install the 'voice' extra)",
         )
         try:
             yield
@@ -77,6 +112,10 @@ def create_app(
     app.add_middleware(TokenAuthMiddleware, token=app_settings.auth_token)
     app.include_router(health.router)
     app.include_router(chat.router)
+    if voice_enabled:
+        from app.api import voice
+
+        app.include_router(voice.router)
     return app
 
 

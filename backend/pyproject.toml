@@ -17,8 +17,20 @@ dependencies = [
 
 # Heavy dependencies land with the phase that needs them, so a fresh
 # Phase 2 install stays small on 8GB hardware:
-#   memory  -> Phase 7, browser -> Phase 9, macos -> Phase 6 (tools)
+#   voice -> Phase 4, memory -> Phase 7, browser -> Phase 9, macos -> Phase 6
 [project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.0",
+    "openwakeword>=0.6",
+    "onnxruntime>=1.18",
+    "numpy>=1.26",
+    "sounddevice>=0.5",
+]
+# Piper is kept separate: its wheels have historically been flaky on
+# macOS arm64. Without it, TTS falls back to the built-in `say` command.
+tts-piper = [
+    "piper-tts>=1.2",
+]
 memory = [
     "chromadb>=0.5",
 ]
@@ -64,3 +76,10 @@ warn_unused_ignores = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: needs local models, network, or macOS services",
+]
+
+[[tool.mypy.overrides]]
+module = ["faster_whisper.*", "openwakeword.*", "piper.*", "sounddevice.*", "websockets.*"]
+ignore_missing_imports = true
