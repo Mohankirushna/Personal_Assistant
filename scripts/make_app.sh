@@ -7,6 +7,9 @@
 # ad-hoc signature.
 #
 # Usage: scripts/make_app.sh [output-dir]   (default: frontend/dist)
+#
+# The completed bundle is also registered as a per-user login item so Jarvis
+# starts again after a restart. Set JARVIS_SKIP_LOGIN_ITEM=1 to build only.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +52,10 @@ PLIST
 
 # Ad-hoc signature so TCC permission grants stick across rebuilds.
 codesign --force --sign - "$APP"
+
+if [[ "${JARVIS_SKIP_LOGIN_ITEM:-0}" != "1" ]]; then
+    "$REPO_ROOT/scripts/install_login_item.sh" "$APP"
+fi
 
 echo "Done: $APP"
 echo "Launch with: open \"$APP\""

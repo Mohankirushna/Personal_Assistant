@@ -20,8 +20,16 @@ from app.core.safety import Confirmer
 from app.core.sessions import ChatSession, SessionStore
 from app.memory.service import MemoryService
 from app.planner.planner import Planner
+from app.planner.schemas import PlanExecution
 
 logger = logging.getLogger(__name__)
+
+# Tools whose output is worth forwarding when the user later says
+# "send that/this to <name>" — deliberately just the info/browse tools,
+# not actions like opening apps or controlling media.
+_SHAREABLE_CONTENT_TOOLS = {
+    "brave_search_open_first", "browser_search", "news_search", "youtube_play",
+}
 
 
 class ChatService:
@@ -43,6 +51,21 @@ class ChatService:
 
     def open_session(self, session_id: str | None) -> ChatSession:
         return self._sessions.ensure(session_id)
+
+    @staticmethod
+    def _update_shareable_content(session: ChatSession, execution: PlanExecution) -> None:
+        for step in execution.steps:
+            if step.tool not in _SHAREABLE_CONTENT_TOOLS:
+                continue
+            if step.result is None or not step.result.ok:
+                continue
+            data = step.result.data
+            if data.get("query"):
+                session.last_query = data["query"]
+            if data.get("url"):
+                session.last_url = data["url"]
+        if execution.reply:
+            session.last_text = execution.reply
 
     def _prompt_messages(self, session: ChatSession) -> list[Message]:
         # The system prompt is injected per call rather than stored, so
@@ -66,6 +89,9 @@ class ChatService:
                 history=history,
                 confirmer=confirmer,
                 memory_context=memory_context,
+                last_query=session.last_query,
+                last_url=session.last_url,
+                last_text=session.last_text,
             )
             # Store the reply PLUS a compact trace of what actually ran, so
             # follow-ups can reference concrete outcomes (file paths, track
@@ -77,6 +103,7 @@ class ChatService:
                 if step.result is not None and step.result.ok
             )
             self._sessions.append(session, "assistant", execution.reply + trace)
+            self._update_shareable_content(session, execution)
             if self._memory:
                 await self._memory.record_turn(session.id, execution)
             return execution.reply

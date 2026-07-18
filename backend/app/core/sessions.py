@@ -17,6 +17,12 @@ from app.core.ollama_client import Message
 class ChatSession:
     id: str
     messages: list[Message] = field(default_factory=list)
+    # The most recent thing Jarvis found/said that "send this/that to <name>"
+    # can refer to — set after a search/browse tool call or a spoken reply,
+    # so it survives turns that don't touch it (e.g. a "thanks" in between).
+    last_query: str | None = None
+    last_url: str | None = None
+    last_text: str | None = None
 
 
 class SessionStore:

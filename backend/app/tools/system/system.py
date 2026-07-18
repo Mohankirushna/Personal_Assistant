@@ -9,9 +9,14 @@ reports that clearly when missing rather than failing cryptically.
 from __future__ import annotations
 
 import asyncio
-import shutil
+import ctypes
+import html
+import json
+import re
 from datetime import datetime
 from typing import ClassVar, Literal
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field
 
@@ -105,6 +110,505 @@ class OpenUrlTool(Tool):
         return ToolResult(tool=self.name, ok=True, summary=f"Opened {url}{where}")
 
 
+class BrowserSearchArgs(BaseModel):
+    query: str = Field(description="Words or a question to search for.")
+    engine: Literal["google", "wikipedia"] = Field(
+        default="google",
+        description="Use 'wikipedia' only when the user explicitly asks to search Wikipedia.",
+    )
+    browser: str | None = Field(
+        default=None,
+        description="Browser app to use, such as 'Google Chrome', 'Safari', or 'Firefox'.",
+    )
+
+
+class BrowserSearchTool(Tool):
+    """Open a search in the user's real browser, without a headless-browser dependency."""
+
+    name: ClassVar[str] = "browser_search"
+    description: ClassVar[str] = (
+        "Search Google or Wikipedia in the user's visible browser. Use for requests such as "
+        "'search volcanoes in Chrome' or 'search Wikipedia for Ada Lovelace'."
+    )
+    args_model: ClassVar[type[BaseModel]] = BrowserSearchArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _url(query: str, engine: str) -> str:
+        if engine == "wikipedia":
+            return "https://en.wikipedia.org/w/index.php?search=" + quote_plus(query)
+        return "https://www.google.com/search?q=" + quote_plus(query)
+
+    async def run(self, args: BrowserSearchArgs) -> ToolResult:  # type: ignore[override]
+        url = self._url(args.query, args.engine)
+        argv = ["/usr/bin/open", url]
+        if args.browser:
+            argv = ["/usr/bin/open", "-a", args.browser, url]
+        output = await run_command(argv)
+        if not output.ok:
+            hint = ""
+            if args.browser and "Unable to find application" in output.combined():
+                hint = f" (is {args.browser!r} installed?)"
+            return ToolResult.failure(
+                self.name, f"could not open the search: {output.combined()}{hint}"
+            )
+        where = f" in {args.browser}" if args.browser else ""
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Searching {args.engine} for {args.query!r}{where}.",
+            data={"query": args.query, "engine": args.engine, "url": url},
+        )
+
+
+class BraveSearchOpenFirstArgs(BaseModel):
+    query: str = Field(description="Words or a question to search for in Brave Search.")
+
+
+class BraveSearchOpenFirstTool(Tool):
+    """Find and open Brave Search's first ordinary web result in Brave."""
+
+    name: ClassVar[str] = "brave_search_open_first"
+    description: ClassVar[str] = (
+        "Search Brave Search and open the first non-sponsored web result in the Brave browser, "
+        "visible on screen. This is the DEFAULT choice whenever the user names a topic, asks a "
+        "factual question, or says 'search for <topic>' — even a bare topic with no verb, e.g. "
+        "'amazon forest' or 'ironman'. Prefer this over web_search unless the user explicitly "
+        "asks for a written summary or list of results instead of a page to look at."
+    )
+    args_model: ClassVar[type[BaseModel]] = BraveSearchOpenFirstArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _first_result_url(page: str) -> str | None:
+        """Extract the first external result, ignoring Brave navigation and ads."""
+        for raw_url in re.findall(r'<a[^>]+href=["\']([^"\']+)', page, flags=re.IGNORECASE):
+            candidate = html.unescape(raw_url)
+            parsed = urlparse(candidate)
+            if parsed.netloc.endswith("search.brave.com") and parsed.path == "/redirect":
+                candidate = unquote(parse_qs(parsed.query).get("url", [""])[0])
+                parsed = urlparse(candidate)
+            if parsed.scheme not in {"http", "https"}:
+                continue
+            if parsed.netloc.endswith("brave.com"):
+                continue
+            return candidate
+        return None
+
+    _BROWSER_USER_AGENT = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+
+    @classmethod
+    async def _fetch_search_page(cls, search_url: str) -> str:
+        # Python's urllib is blocked by Brave's anti-bot layer (HTTP 429)
+        # regardless of headers — it fingerprints the TLS/HTTP client itself,
+        # not just the User-Agent string. curl's fingerprint isn't blocked, so
+        # shell out to it instead of using urlopen. --fail is load-bearing:
+        # without it a 429 block page comes back as "success", and its first
+        # external link (a Tor support page) gets opened as "the result".
+        output = await run_command([
+            "/usr/bin/curl", "-s", "-L", "--fail", "--max-time", "15",
+            "-A", cls._BROWSER_USER_AGENT,
+            "-H", "Accept-Language: en-US,en;q=0.9",
+            search_url,
+        ])
+        if not output.ok or not output.stdout.strip():
+            raise RuntimeError(output.combined() or "empty response from Brave Search")
+        return output.stdout
+
+    @staticmethod
+    def _ddgs_first_url(query: str) -> str | None:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            return None
+        for result in DDGS().text(query, max_results=5):
+            url = result.get("href", "")
+            if url.startswith(("http://", "https://")):
+                return url
+        return None
+
+    async def run(self, args: BraveSearchOpenFirstArgs) -> ToolResult:  # type: ignore[override]
+        search_url = "https://search.brave.com/search?q=" + quote_plus(args.query)
+        # Primary: the ddgs library (DuckDuckGo's API endpoints) — reliable
+        # and not rate-limited the way scraping a results page is. Fallback:
+        # scrape Brave's results page. Last resort: open the search itself,
+        # which still gets the user real results — only actually failing to
+        # launch Brave Browser is a hard failure.
+        result_url: str | None = None
+        try:
+            result_url = await asyncio.to_thread(self._ddgs_first_url, args.query)
+        except Exception:  # noqa: BLE001 - fall through to the Brave scrape
+            result_url = None
+        if result_url is None:
+            try:
+                page = await self._fetch_search_page(search_url)
+                result_url = self._first_result_url(page)
+            except Exception:  # noqa: BLE001 - any scrape failure falls back below
+                result_url = None
+
+        target_url = result_url or search_url
+        output = await run_command(["/usr/bin/open", "-a", "Brave Browser", target_url])
+        if not output.ok:
+            return ToolResult.failure(
+                self.name,
+                f"could not open Brave: {output.combined()} (is Brave Browser installed?)",
+            )
+        if result_url is not None:
+            summary = f"Opened the first search result for {args.query!r} in Brave."
+        else:
+            summary = (
+                f"The search results didn't load directly, so I opened "
+                f"the search for {args.query!r} in Brave instead."
+            )
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=summary,
+            data={"query": args.query, "search_url": search_url, "url": target_url},
+        )
+
+
+class YouTubePlayArgs(BaseModel):
+    query: str = Field(description="Song, artist, or video to find and play on YouTube.")
+    browser: str | None = Field(
+        default=None,
+        description="Browser app to use, e.g. 'Brave Browser' or 'Google Chrome'.",
+    )
+
+
+class YouTubePlayTool(Tool):
+    """Find the first matching YouTube video and open it in a visible browser.
+
+    YouTube does not offer a public desktop-control API. Resolving a watch URL
+    before opening it is substantially more reliable than opening a search
+    page and hoping a fragile UI script clicks the intended result.
+    """
+
+    name: ClassVar[str] = "youtube_play"
+    description: ClassVar[str] = (
+        "Find a requested song/video on YouTube, open the matching video in the user's "
+        "visible browser, and request autoplay. Use for 'play <song> on YouTube'."
+    )
+    args_model: ClassVar[type[BaseModel]] = YouTubePlayArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _find_video_id(query: str) -> str | None:
+        url = "https://www.youtube.com/results?search_query=" + quote_plus(query)
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=15) as response:  # noqa: S310 - fixed HTTPS origin
+            page = response.read().decode("utf-8", errors="ignore")
+        match = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', page)
+        return match.group(1) if match else None
+
+    async def run(self, args: YouTubePlayArgs) -> ToolResult:  # type: ignore[override]
+        try:
+            video_id = await asyncio.to_thread(self._find_video_id, args.query)
+        except Exception as exc:  # noqa: BLE001 - network errors need a clear tool result
+            return ToolResult.failure(self.name, f"could not search YouTube: {exc}")
+        if video_id is None:
+            return ToolResult.failure(
+                self.name, f"could not find a YouTube video for {args.query!r}"
+            )
+
+        url = f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
+        argv = ["/usr/bin/open", url]
+        if args.browser:
+            argv = ["/usr/bin/open", "-a", args.browser, url]
+        output = await run_command(argv)
+        if not output.ok:
+            return ToolResult.failure(
+                self.name, f"could not open the YouTube video: {output.combined()}"
+            )
+        where = f" in {args.browser}" if args.browser else ""
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Opened a YouTube result for {args.query!r}{where} and requested playback.",
+            data={"url": url, "query": args.query, "video_id": video_id},
+        )
+
+
+class MusicPlatformPromptArgs(BaseModel):
+    query: str = Field(description="The song, artist, or music request the user wants to play.")
+
+
+class MusicPlatformPromptTool(Tool):
+    """Return a deterministic clarification instead of silently choosing a service."""
+
+    name: ClassVar[str] = "music_platform_prompt"
+    description: ClassVar[str] = (
+        "Ask which music platform to use when the user requested music without naming one. "
+        "Offer YouTube, Spotify, and Apple Music."
+    )
+    args_model: ClassVar[type[BaseModel]] = MusicPlatformPromptArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    async def run(self, args: MusicPlatformPromptArgs) -> ToolResult:  # type: ignore[override]
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=(
+                f"Where would you like to play {args.query}: YouTube, Spotify, or Apple Music?"
+            ),
+            data={"query": args.query, "platforms": ["YouTube", "Spotify", "Apple Music"]},
+        )
+
+
+class SpotifyPlayArgs(BaseModel):
+    query: str = Field(description="Song, artist, album, or playlist to find in Spotify.")
+
+
+_SPOTIFY_TRACK_ID = re.compile(r"open\.spotify\.com/track/([A-Za-z0-9]+)")
+
+
+class SpotifyPlayTool(Tool):
+    """Resolve a song to a Spotify track and play it via Spotify's own
+    AppleScript API (`play track "spotify:track:…"`).
+
+    Spotify's desktop app has no scriptable *search*, but playback of a known
+    track URI is first-class scripting — far sturdier than the previous
+    approach of typing into its search UI and hunting for a Play button,
+    which needed Accessibility permission and broke on UI changes. The track
+    is found by a web search restricted to open.spotify.com/track pages.
+    """
+
+    name: ClassVar[str] = "spotify_play"
+    description: ClassVar[str] = (
+        "Find a requested song on Spotify and play it in the Spotify desktop app. "
+        "Use when the user specifically names Spotify."
+    )
+    args_model: ClassVar[type[BaseModel]] = SpotifyPlayArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _ddgs_track_search(query: str) -> str | None:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            return None
+        for result in DDGS().text(f"site:open.spotify.com/track {query}", max_results=5):
+            match = _SPOTIFY_TRACK_ID.search(result.get("href", ""))
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    async def _find_track_id(query: str) -> str | None:
+        # Primary: the ddgs library (same engine as web_search) — reliable
+        # and not rate-limited the way scraping results pages is.
+        try:
+            track_id = await asyncio.to_thread(SpotifyPlayTool._ddgs_track_search, query)
+        except Exception:  # noqa: BLE001 - fall through to the scrape fallback
+            track_id = None
+        if track_id is not None:
+            return track_id
+        # Fallback: scrape Brave Search (can be intermittently 429'd).
+        search_url = "https://search.brave.com/search?q=" + quote_plus(
+            f"site:open.spotify.com/track {query}"
+        )
+        output = await run_command([
+            "/usr/bin/curl", "-s", "-L", "--max-time", "15",
+            "-A", BraveSearchOpenFirstTool._BROWSER_USER_AGENT,
+            "-H", "Accept-Language: en-US,en;q=0.9",
+            search_url,
+        ])
+        if not output.ok:
+            return None
+        match = _SPOTIFY_TRACK_ID.search(output.stdout)
+        return match.group(1) if match else None
+
+    async def run(self, args: SpotifyPlayArgs) -> ToolResult:  # type: ignore[override]
+        track_id = await self._find_track_id(args.query)
+        if track_id is None:
+            # Couldn't resolve a specific track — open Spotify's search UI so
+            # the user can pick, and say so honestly rather than pretending.
+            uri = "spotify:search:" + quote(args.query, safe="")
+            output = await run_command(["/usr/bin/open", "-a", "Spotify", uri])
+            if not output.ok:
+                return ToolResult.failure(
+                    self.name,
+                    f"could not open Spotify: {output.combined()} (is Spotify installed?)",
+                )
+            return ToolResult(
+                tool=self.name,
+                ok=True,
+                summary=(
+                    f"I couldn't pin down an exact track for {args.query!r}, so I opened "
+                    "the Spotify search — pick the one you want."
+                ),
+                data={"query": args.query, "uri": uri},
+            )
+
+        script = f'''tell application "Spotify"
+    activate
+    play track "spotify:track:{track_id}"
+    delay 1
+    set trackInfo to (name of current track) & "||" & (artist of current track)
+    return trackInfo & "||" & (player state as string)
+end tell'''
+        playback = await run_osascript(script)
+        if not playback.ok:
+            hint = ""
+            if "Not authorized" in playback.combined() or "-1743" in playback.combined():
+                hint = (
+                    " Approve the 'Jarvis wants to control Spotify' popup, or enable it in "
+                    "System Settings → Privacy & Security → Automation → Jarvis → Spotify."
+                )
+            return ToolResult.failure(
+                self.name,
+                f"could not control Spotify: {playback.combined()}{hint}",
+            )
+        name, _, rest = playback.stdout.strip().partition("||")
+        artist, _, state = rest.partition("||")
+        if state.strip() != "playing":
+            return ToolResult.failure(
+                self.name,
+                f"Spotify accepted the track but reports state {state.strip()!r}, not playing.",
+            )
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Playing {name} by {artist} on Spotify.",
+            data={
+                "query": args.query, "track_id": track_id,
+                "track": name, "artist": artist,
+            },
+        )
+
+
+class SpotifyOpenPlaylistArgs(BaseModel):
+    playlist: str = Field(description="Name of a playlist in the user's Spotify library.")
+
+
+class SpotifyOpenPlaylistTool(Tool):
+    name: ClassVar[str] = "spotify_open_playlist"
+    description: ClassVar[str] = (
+        "Open a named playlist in the user's Spotify library. Use when the user asks to "
+        "open a playlist in Spotify, especially a personal playlist."
+    )
+    args_model: ClassVar[type[BaseModel]] = SpotifyOpenPlaylistArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    async def run(self, args: SpotifyOpenPlaylistArgs) -> ToolResult:  # type: ignore[override]
+        output = await run_command(["/usr/bin/open", "-a", "Spotify"])
+        if not output.ok:
+            return ToolResult.failure(
+                self.name,
+                f"could not open Spotify: {output.combined()} (is Spotify installed?)",
+            )
+        # Spotify does not expose a scriptable playlist library. Search inside
+        # the signed-in desktop app, then activate the matching playlist result
+        # through Accessibility rather than relying on public web search.
+        script = f'''\
+tell application "Spotify" to activate
+delay 0.8
+tell application "System Events"
+    tell process "Spotify"
+        keystroke "l" using command down
+        delay 0.3
+        keystroke {applescript_quote(args.playlist)}
+        delay 0.8
+        key code 36
+        delay 1.5
+        set searchWindow to window 1
+        set {{windowX, windowY}} to position of searchWindow
+        set {{windowWidth, windowHeight}} to size of searchWindow
+        set resultLeft to windowX + (windowWidth * 1 / 10)
+        set resultTop to windowY + (windowHeight * 1 / 8)
+        set resultBottom to windowY + (windowHeight * 3 / 4)
+        repeat with uiElement in entire contents of searchWindow
+            try
+                set {{elementX, elementY}} to position of uiElement
+                if elementX > resultLeft then
+                    if elementY > resultTop and elementY < resultBottom then
+                        set elementText to ""
+                        try
+                            set elementText to name of uiElement as text
+                        end try
+                        try
+                            set elementDescription to description of uiElement as text
+                            set elementText to elementText & " " & elementDescription
+                        end try
+                        try
+                            set elementText to elementText & " " & (value of uiElement as text)
+                        end try
+                        if elementText contains {applescript_quote(args.playlist)} then
+                            click uiElement
+                            return "opened"
+                        end if
+                    end if
+                end if
+            end try
+        end repeat
+    end tell
+end tell
+return "not found"'''
+        playlist_result = await run_osascript(script)
+        if not playlist_result.ok:
+            return ToolResult.failure(
+                self.name,
+                "Spotify opened, but Jarvis could not inspect your library. "
+                "Grant Accessibility permission to Jarvis (or the Terminal running the backend) "
+                "in System Settings → Privacy & Security → Accessibility. "
+                + playlist_result.combined(),
+            )
+        if playlist_result.stdout.strip() != "opened":
+            return ToolResult.failure(
+                self.name,
+                f"Spotify searched for the playlist {args.playlist!r}, but could not open a "
+                "matching result. Use the playlist's exact displayed name.",
+            )
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Opened your Spotify playlist {args.playlist!r}.",
+            data={"playlist": args.playlist},
+        )
+
+
+class NewsSearchArgs(BaseModel):
+    query: str = Field(description="Topic to search for in recent news.")
+    browser: str | None = Field(
+        default=None,
+        description="Browser app to use, e.g. 'Brave Browser' or 'Google Chrome'.",
+    )
+
+
+class NewsSearchTool(Tool):
+    name: ClassVar[str] = "news_search"
+    description: ClassVar[str] = (
+        "Open a Google News search for recent articles about a topic in the user's visible "
+        "browser. Only use when the request itself signals news/current-events — words like "
+        "'news', 'recent', 'latest', 'happening now', 'updates'. A bare topic or general "
+        "question with none of those words (e.g. 'amazon forest', 'ironman') is NOT a news "
+        "request — use brave_search_open_first for that instead."
+    )
+    args_model: ClassVar[type[BaseModel]] = NewsSearchArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    async def run(self, args: NewsSearchArgs) -> ToolResult:  # type: ignore[override]
+        url = "https://news.google.com/search?q=" + quote_plus(args.query)
+        argv = ["/usr/bin/open", url]
+        if args.browser:
+            argv = ["/usr/bin/open", "-a", args.browser, url]
+        output = await run_command(argv)
+        if not output.ok:
+            return ToolResult.failure(
+                self.name, f"could not open the news search: {output.combined()}"
+            )
+        where = f" in {args.browser}" if args.browser else ""
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Opened recent news about {args.query!r}{where}.",
+            data={"url": url, "query": args.query},
+        )
+
+
 class QuitAppArgs(BaseModel):
     name: str = Field(description="Application to quit, e.g. 'Safari'.")
 
@@ -154,34 +658,231 @@ class ListAppsTool(Tool):
         )
 
 
+class BluetoothDevicesArgs(BaseModel):
+    pass
+
+
+class BluetoothDevicesTool(Tool):
+    """List devices currently connected to the Mac over Bluetooth."""
+
+    name: ClassVar[str] = "list_bluetooth_devices"
+    description: ClassVar[str] = (
+        "List Bluetooth devices that are currently connected to this Mac."
+    )
+    args_model: ClassVar[type[BaseModel]] = BluetoothDevicesArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _connected_device_names(payload: object) -> list[str]:
+        """Extract connected devices from system_profiler's nested JSON output."""
+        names: list[str] = []
+
+        def visit(value: object) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    visit(item)
+                return
+            if not isinstance(value, dict):
+                return
+
+            connected = str(value.get("device_connected", "")).lower() == "yes"
+            if connected:
+                name = next(
+                    (
+                        str(value[key]).strip()
+                        for key in ("device_name", "_name", "name")
+                        if value.get(key)
+                    ),
+                    "Unknown Bluetooth device",
+                )
+                if name not in names:
+                    names.append(name)
+            for child in value.values():
+                visit(child)
+
+        visit(payload)
+        return names
+
+    async def run(self, args: BluetoothDevicesArgs) -> ToolResult:  # type: ignore[override]
+        output = await run_command(["/usr/sbin/system_profiler", "SPBluetoothDataType", "-json"])
+        if not output.ok:
+            return ToolResult.failure(
+                self.name, f"could not inspect Bluetooth devices: {output.combined()}"
+            )
+        try:
+            devices = self._connected_device_names(json.loads(output.stdout))
+        except json.JSONDecodeError:
+            return ToolResult.failure(
+                self.name, "could not read Bluetooth device information from macOS"
+            )
+        if not devices:
+            return ToolResult(
+                tool=self.name,
+                ok=True,
+                summary="No Bluetooth devices are currently connected.",
+                data={"devices": []},
+            )
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary="Connected Bluetooth devices: " + ", ".join(devices),
+            data={"devices": devices},
+        )
+
+
 class VolumeArgs(BaseModel):
     level: int | None = Field(
         default=None,
         ge=0,
         le=100,
-        description="Volume 0-100 to set; omit to just read the current volume.",
+        description="Absolute volume 0-100 to set; omit for a relative change or to just read it.",
+    )
+    direction: Literal["up", "down"] | None = Field(
+        default=None,
+        description="Adjust volume relatively ('turn the volume up') instead of an absolute level.",
+    )
+    amount: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Percentage points to change by when direction is set.",
+    )
+    muted: bool | None = Field(
+        default=None,
+        description="Mute (true) or unmute (false) output. Preserves the volume level, unlike "
+        "setting level to 0.",
     )
 
 
 class VolumeTool(Tool):
     name: ClassVar[str] = "volume"
-    description: ClassVar[str] = "Get or set the system output volume (0-100)."
+    description: ClassVar[str] = (
+        "Get, set, or relatively adjust (up/down) the system output volume (0-100), "
+        "or mute/unmute without changing the level."
+    )
     args_model: ClassVar[type[BaseModel]] = VolumeArgs
     risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
 
+    @staticmethod
+    async def _current_level() -> int | None:
+        output = await run_osascript("output volume of (get volume settings)")
+        if not output.ok:
+            return None
+        return int(output.stdout.strip())
+
+    @staticmethod
+    async def _current_muted() -> bool | None:
+        output = await run_osascript("output muted of (get volume settings)")
+        if not output.ok:
+            return None
+        return output.stdout.strip() == "true"
+
     async def run(self, args: VolumeArgs) -> ToolResult:  # type: ignore[override]
-        if args.level is None:
-            output = await run_osascript("output volume of (get volume settings)")
+        if args.muted is not None:
+            output = await run_osascript(
+                f"set volume output muted {'true' if args.muted else 'false'}"
+            )
             if not output.ok:
                 return ToolResult.failure(self.name, output.combined())
-            level = output.stdout.strip()
+            state = "Muted" if args.muted else "Unmuted"
             return ToolResult(
-                tool=self.name, ok=True, summary=f"Volume is {level}%", data={"level": int(level)}
+                tool=self.name, ok=True, summary=f"{state} the volume.",
+                data={"muted": args.muted},
             )
-        output = await run_osascript(f"set volume output volume {args.level}")
+
+        if args.level is None and args.direction is None:
+            level = await self._current_level()
+            muted = await self._current_muted()
+            if level is None:
+                return ToolResult.failure(self.name, "could not read the current volume.")
+            summary = f"Volume is {level}%" + (" (muted)" if muted else "")
+            return ToolResult(
+                tool=self.name, ok=True, summary=summary,
+                data={"level": level, "muted": bool(muted)},
+            )
+
+        target = args.level
+        if target is None:
+            current = await self._current_level()
+            if current is None:
+                return ToolResult.failure(self.name, "could not read the current volume.")
+            delta = args.amount if args.direction == "up" else -args.amount
+            target = max(0, min(100, current + delta))
+
+        output = await run_osascript(f"set volume output volume {target}")
         if not output.ok:
             return ToolResult.failure(self.name, output.combined())
-        return ToolResult(tool=self.name, ok=True, summary=f"Volume set to {args.level}%")
+        return ToolResult(
+            tool=self.name, ok=True, summary=f"Volume set to {target}%", data={"level": target}
+        )
+
+
+class BatteryStatusArgs(BaseModel):
+    pass
+
+
+class BatteryStatusTool(Tool):
+    name: ClassVar[str] = "battery_status"
+    description: ClassVar[str] = "Get the Mac's current battery charge percentage and power state."
+    args_model: ClassVar[type[BaseModel]] = BatteryStatusArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    @staticmethod
+    def _parse_status(output: str) -> tuple[int, str] | None:
+        match = re.search(r"(\d{1,3})%;\s*([^;\n]+)", output)
+        if not match:
+            return None
+        return int(match.group(1)), match.group(2).strip()
+
+    async def run(self, args: BatteryStatusArgs) -> ToolResult:  # type: ignore[override]
+        output = await run_command(["/usr/bin/pmset", "-g", "batt"])
+        if not output.ok:
+            return ToolResult.failure(
+                self.name, f"could not read battery status: {output.combined()}"
+            )
+        parsed = self._parse_status(output.stdout)
+        if parsed is None:
+            return ToolResult.failure(self.name, "could not find a battery charge percentage")
+        percentage, state = parsed
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"Your Mac battery is at {percentage}% ({state}).",
+            data={"percentage": percentage, "state": state},
+        )
+
+
+class SystemPowerArgs(BaseModel):
+    action: Literal["restart", "shutdown"] = Field(
+        description="Whether to restart or shut down the Mac."
+    )
+
+
+class SystemPowerTool(Tool):
+    """Restart or shut down macOS after the safety gate receives approval."""
+
+    name: ClassVar[str] = "system_power"
+    description: ClassVar[str] = (
+        "Restart or shut down the Mac. This always requires explicit user confirmation."
+    )
+    args_model: ClassVar[type[BaseModel]] = SystemPowerArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.DESTRUCTIVE
+
+    async def run(self, args: SystemPowerArgs) -> ToolResult:  # type: ignore[override]
+        command = "restart" if args.action == "restart" else "shut down"
+        output = await run_osascript(f'tell application "System Events" to {command}')
+        if not output.ok:
+            return ToolResult.failure(
+                self.name,
+                f"could not {args.action} the Mac: {output.combined()}",
+            )
+        verb = "Restarting" if args.action == "restart" else "Shutting down"
+        return ToolResult(
+            tool=self.name,
+            ok=True,
+            summary=f"{verb} your Mac now.",
+            data={"action": args.action},
+        )
 
 
 class ScreenshotArgs(BaseModel):
@@ -249,6 +950,16 @@ class MediaTool(Tool):
         output = await run_osascript(f"application {applescript_quote(app)} is running")
         return output.ok and output.stdout.strip() == "true"
 
+    @staticmethod
+    def _expected_state(action: str) -> str | None:
+        return {"play": "playing", "pause": "paused"}.get(action)
+
+    async def _player_state(self, quoted_player: str) -> str | None:
+        output = await run_osascript(
+            f"tell application {quoted_player} to player state"
+        )
+        return output.stdout.strip() if output.ok else None
+
     async def run(self, args: MediaArgs) -> ToolResult:  # type: ignore[override]
         verb = self._ACTIONS[args.action]
         for player in ("Spotify", "Music"):
@@ -260,6 +971,26 @@ class MediaTool(Tool):
                 return ToolResult.failure(
                     self.name, f"could not control {player}: {output.combined()}"
                 )
+            expected_state = self._expected_state(args.action)
+            if expected_state is not None:
+                # Spotify occasionally acknowledges `pause` without changing
+                # its state. Confirm the result before reporting success. A
+                # play/pause fallback is safe only after observing "playing".
+                await asyncio.sleep(0.15)
+                state = await self._player_state(quoted)
+                if args.action == "pause" and state == "playing":
+                    fallback = await run_osascript(
+                        f"tell application {quoted} to playpause"
+                    )
+                    if fallback.ok:
+                        await asyncio.sleep(0.15)
+                        state = await self._player_state(quoted)
+                if state != expected_state:
+                    current = state or "an unreadable state"
+                    return ToolResult.failure(
+                        self.name,
+                        f"{player} is still {current}; it did not {args.action}.",
+                    )
             # Skipping implies the user wants to *hear* the result, so force
             # playback — a bare `next track` can leave the player paused/silent
             # in some states. Give the player a moment to switch tracks before
@@ -270,8 +1001,7 @@ class MediaTool(Tool):
             # Read the real resulting state AND current track, so the reply is
             # grounded in what actually happened — "next" that didn't advance
             # can't be reported as success, and the model can't invent a title.
-            state_out = await run_osascript(f"tell application {quoted} to player state")
-            state = state_out.stdout.strip() or "unknown"
+            state = await self._player_state(quoted) or "unknown"
             track_out = await run_osascript(
                 f'tell application {quoted} to name of current track'
             )
@@ -356,26 +1086,101 @@ class WindowArrangeTool(Tool):
 
 
 class BrightnessArgs(BaseModel):
-    level: float = Field(ge=0.0, le=1.0, description="Screen brightness, 0.0-1.0.")
+    level: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Absolute brightness 0.0-1.0 to set; omit for a relative change "
+        "or to just read it.",
+    )
+    direction: Literal["up", "down"] | None = Field(
+        default=None,
+        description="Adjust brightness relatively ('turn the brightness up') instead of an "
+        "absolute level.",
+    )
+    amount: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=1.0,
+        description="How much to change brightness by (0.0-1.0 scale) when direction is set.",
+    )
 
 
 class BrightnessTool(Tool):
+    """Read/set display brightness via the private DisplayServices framework.
+
+    The public `brightness` CLI relies on DDC/IOKit APIs that Apple has
+    blocked for the built-in display on Apple Silicon Macs — it silently
+    does nothing there even when installed. DisplayServicesGetBrightness /
+    DisplayServicesSetBrightness are the same private calls System Settings'
+    own brightness slider uses, and work on both Intel and Apple Silicon.
+    """
+
     name: ClassVar[str] = "brightness"
-    description: ClassVar[str] = "Set the display brightness (0.0 to 1.0)."
+    description: ClassVar[str] = (
+        "Get, set, or relatively adjust (up/down) the display brightness (0.0 to 1.0)."
+    )
     args_model: ClassVar[type[BaseModel]] = BrightnessArgs
     risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
 
+    _CORE_GRAPHICS_PATH = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+    _DISPLAY_SERVICES_PATH = (
+        "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices"
+    )
+
+    @classmethod
+    def _display_services(cls) -> tuple[ctypes.CDLL, int]:
+        core_graphics = ctypes.CDLL(cls._CORE_GRAPHICS_PATH)
+        core_graphics.CGMainDisplayID.restype = ctypes.c_uint32
+        display_id = core_graphics.CGMainDisplayID()
+
+        display_services = ctypes.CDLL(cls._DISPLAY_SERVICES_PATH)
+        display_services.DisplayServicesGetBrightness.restype = ctypes.c_int
+        display_services.DisplayServicesGetBrightness.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)
+        ]
+        display_services.DisplayServicesSetBrightness.restype = ctypes.c_int
+        display_services.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+        return display_services, display_id
+
+    @classmethod
+    def _get_brightness(cls) -> float | None:
+        display_services, display_id = cls._display_services()
+        value = ctypes.c_float()
+        if display_services.DisplayServicesGetBrightness(display_id, ctypes.byref(value)) != 0:
+            return None
+        return value.value
+
+    @classmethod
+    def _set_brightness(cls, level: float) -> bool:
+        display_services, display_id = cls._display_services()
+        return display_services.DisplayServicesSetBrightness(display_id, ctypes.c_float(level)) == 0
+
     async def run(self, args: BrightnessArgs) -> ToolResult:  # type: ignore[override]
-        binary = shutil.which("brightness")
-        if binary is None:
-            return ToolResult.failure(
-                self.name,
-                "The 'brightness' CLI is not installed. Install it with "
-                "`brew install brightness` to enable this.",
-            )
-        output = await run_command([binary, str(args.level)])
-        if not output.ok:
-            return ToolResult.failure(self.name, output.combined())
+        try:
+            if args.level is None and args.direction is None:
+                level = await asyncio.to_thread(self._get_brightness)
+                if level is None:
+                    return ToolResult.failure(self.name, "could not read the display brightness.")
+                return ToolResult(
+                    tool=self.name, ok=True, summary=f"Brightness is {level:.0%}",
+                    data={"level": level},
+                )
+
+            target = args.level
+            if target is None:
+                current = await asyncio.to_thread(self._get_brightness)
+                if current is None:
+                    return ToolResult.failure(self.name, "could not read the display brightness.")
+                delta = args.amount if args.direction == "up" else -args.amount
+                target = max(0.0, min(1.0, current + delta))
+
+            ok = await asyncio.to_thread(self._set_brightness, target)
+        except OSError as exc:
+            return ToolResult.failure(self.name, f"could not change brightness: {exc}")
+        if not ok:
+            return ToolResult.failure(self.name, "could not change the display brightness.")
         return ToolResult(
-            tool=self.name, ok=True, summary=f"Brightness set to {args.level:.0%}"
+            tool=self.name, ok=True, summary=f"Brightness set to {target:.0%}",
+            data={"level": target},
         )

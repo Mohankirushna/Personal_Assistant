@@ -34,16 +34,30 @@ public struct ChatResponse: Decodable, Equatable {
     }
 }
 
-/// Events on the /ws/chat stream: {"type": "token" | "done" | "error", ...}
+/// A safety-gated action that needs the user's approval before Jarvis can run it.
+public struct ConfirmationRequest: Decodable, Equatable {
+    public let tool: String
+    public let risk: String
+    public let action: String
+
+    public init(tool: String, risk: String, action: String) {
+        self.tool = tool
+        self.risk = risk
+        self.action = action
+    }
+}
+
+/// Events on the /ws/chat stream.
 public enum ChatStreamEvent: Equatable {
     case token(String)
+    case confirmation(ConfirmationRequest)
     case done(sessionId: String, reply: String)
     case error(String)
 }
 
 extension ChatStreamEvent: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case type, content, message, reply
+        case type, content, message, reply, tool, risk, action
         case sessionId = "session_id"
     }
 
@@ -52,6 +66,14 @@ extension ChatStreamEvent: Decodable {
         switch try container.decode(String.self, forKey: .type) {
         case "token":
             self = .token(try container.decode(String.self, forKey: .content))
+        case "confirm_request":
+            self = .confirmation(
+                ConfirmationRequest(
+                    tool: try container.decode(String.self, forKey: .tool),
+                    risk: try container.decode(String.self, forKey: .risk),
+                    action: try container.decode(String.self, forKey: .action)
+                )
+            )
         case "done":
             self = .done(
                 sessionId: try container.decode(String.self, forKey: .sessionId),

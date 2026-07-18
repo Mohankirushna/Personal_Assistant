@@ -1,4 +1,6 @@
 import JarvisAppKit
+import AppKit
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -10,6 +12,28 @@ struct JarvisApp: App {
         Task { await state.start() }
         return state
     }()
+
+    init() {
+        // Login is owned by scripts/install_login_item.sh.  Older builds also
+        // registered through SMAppService, which could start a second copy of
+        // the menu-bar app (and a second microphone stream) after login.
+        try? SMAppService.mainApp.unregister()
+
+        // A LaunchAgent executes the bundle binary directly, so opening the
+        // .app afterwards can otherwise create another independent instance.
+        // Keep the already-running instance and discard this duplicate before
+        // it creates another backend/voice connection.
+        let bundleID = Bundle.main.bundleIdentifier ?? "dev.jarvis.assistant"
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        if let running = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleID)
+            .first(where: { $0.processIdentifier != currentPID }) {
+            running.activate()
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+        }
+    }
 
     var body: some Scene {
         MenuBarExtra("Jarvis", systemImage: menuBarIcon) {

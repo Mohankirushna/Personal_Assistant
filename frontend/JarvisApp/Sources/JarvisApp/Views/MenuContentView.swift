@@ -28,6 +28,11 @@ struct MenuContentView: View {
 
             Divider()
 
+            Text(appState.voiceStatus)
+                .font(.caption)
+
+            Divider()
+
             Button("Open Chat") {
                 openWindow(id: "chat")
                 NSApp.activate(ignoringOtherApps: true)

@@ -35,6 +35,19 @@ struct ChatView: View {
             .padding(10)
         }
         .frame(minWidth: 420, minHeight: 480)
+        .alert(
+            "Allow Jarvis to perform this action?",
+            isPresented: Binding(
+                get: { appState.pendingConfirmation != nil },
+                set: { if !$0 { appState.resolveConfirmation(approved: false) } }
+            ),
+            presenting: appState.pendingConfirmation
+        ) { _ in
+            Button("Allow") { appState.resolveConfirmation(approved: true) }
+            Button("Don't Allow", role: .cancel) { appState.resolveConfirmation(approved: false) }
+        } message: { request in
+            Text(request.action)
+        }
     }
 
     private func sendDraft() {

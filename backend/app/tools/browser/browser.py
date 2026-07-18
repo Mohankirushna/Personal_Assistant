@@ -84,7 +84,14 @@ class BrowserSearchTool(Tool):
     properly (still free, keyless, local)."""
 
     name: ClassVar[str] = "web_search"
-    description: ClassVar[str] = "Search the web and return the top results with URLs."
+    description: ClassVar[str] = (
+        "Search the web and return the top results as TEXT (titles + URLs) — this does NOT "
+        "open anything visible to the user. Use only when the user explicitly wants a written "
+        "list/summary of results, or as the first step of multi-step research (search, then "
+        "browser_open a specific result, then read it). For an ordinary topic or question where "
+        "the user wants to see a page themselves, use brave_search_open_first instead — that is "
+        "the default, not this."
+    )
     args_model: ClassVar[type[BaseModel]] = SearchWebArgs
     risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
 

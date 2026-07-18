@@ -56,6 +56,48 @@ class WipeTool(Tool):
         return ToolResult(tool=self.name, ok=True, summary=f"wiped {args.path}")
 
 
+class ReminderArgs(BaseModel):
+    title: str
+
+
+class ReminderTool(Tool):
+    name: ClassVar[str] = "create_reminder"
+    description: ClassVar[str] = "Create a reminder (test double)."
+    args_model: ClassVar[type[BaseModel]] = ReminderArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    def __init__(self) -> None:
+        self.executions: list[str] = []
+
+    async def run(self, args: ReminderArgs) -> ToolResult:  # type: ignore[override]
+        self.executions.append(args.title)
+        return ToolResult(tool=self.name, ok=True, summary=f"Reminder set: {args.title}")
+
+
+class WhatsAppArgs(BaseModel):
+    recipient: str
+    message: str
+
+
+class WhatsAppEchoTool(Tool):
+    """Stand-in for the real whatsapp_send tool, so reference-resolution
+    tests don't need OpenWA/WAHA or a network call."""
+
+    name: ClassVar[str] = "whatsapp_send"
+    description: ClassVar[str] = "Send a WhatsApp message (test double)."
+    args_model: ClassVar[type[BaseModel]] = WhatsAppArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SENSITIVE
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def run(self, args: WhatsAppArgs) -> ToolResult:  # type: ignore[override]
+        self.sent.append((args.recipient, args.message))
+        return ToolResult(
+            tool=self.name, ok=True, summary=f"Sent {args.message!r} to {args.recipient}."
+        )
+
+
 def tool_call(tool: str, **args: object) -> ChatTurn:
     return ChatTurn(tool_calls=[ToolCallRequest(name=tool, arguments=dict(args))])
 
@@ -135,6 +177,53 @@ async def test_two_empty_turns_admit_inability(
     assert "wasn't able" in execution.reply
 
 
+async def test_fake_json_tool_call_is_recovered_not_read_aloud(
+    settings: Settings, fake_ollama: FakeOllamaClient
+) -> None:
+    """A 3B model sometimes writes a tool call as JSON text instead of using
+    the tool-calling API, and often invents 'web_search' for a real tool
+    that's actually named something else. Recover the call rather than
+    speaking raw JSON to the user."""
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    manager = ModelManager(fake_ollama, settings)
+    planner = Planner(fake_ollama, manager, registry, SafetyGate(), settings)
+
+    class SearchArgs(BaseModel):
+        query: str
+
+    class SearchTool(Tool):
+        name: ClassVar[str] = "brave_search_open_first"
+        description: ClassVar[str] = "Search the web (test double)."
+        args_model: ClassVar[type[BaseModel]] = SearchArgs
+        risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+        async def run(self, args: SearchArgs) -> ToolResult:  # type: ignore[override]
+            return ToolResult(tool=self.name, ok=True, summary=f"found {args.query}")
+
+    registry.register(SearchTool())
+    fake_ollama.queued_turns = [
+        ChatTurn(content='{"name": "web_search", "arguments": {"query": "Ironman"}}'),
+        respond("Ironman is a Marvel superhero."),
+    ]
+    # Phrased to avoid the deterministic fast-path (tested separately in
+    # test_fast_intents.py) so this exercises the LLM-turn recovery path.
+    execution = await planner.run("tell me about ironman", history=[])
+    assert execution.steps[0].tool == "brave_search_open_first"
+    assert execution.steps[0].result is not None and execution.steps[0].result.ok
+    assert execution.reply == "Ironman is a Marvel superhero."
+
+
+async def test_unrecoverable_fake_json_falls_back_to_honest_text(
+    planner: Planner, fake_ollama: FakeOllamaClient
+) -> None:
+    fake_ollama.queued_turns = [
+        ChatTurn(content='{"name": "not_a_real_tool", "arguments": {"x": 1}}'),
+    ]
+    execution = await planner.run("do the thing", history=[])
+    assert "wasn't able" in execution.reply
+
+
 async def test_unknown_tool_feeds_back_and_recovers(
     planner: Planner, fake_ollama: FakeOllamaClient
 ) -> None:
@@ -179,6 +268,25 @@ async def test_step_cap(planner: Planner, fake_ollama: FakeOllamaClient) -> None
     assert "step limit" in execution.reply
 
 
+async def test_identical_repeated_tool_call_stops_the_loop_instead_of_looping(
+    planner: Planner, fake_ollama: FakeOllamaClient, echo_tool: EchoTool
+) -> None:
+    """A small model sometimes reissues the exact same successful call
+    instead of recognizing the task is done (e.g. setting volume to the same
+    level three times in a row) — this must stop immediately, not burn the
+    whole step budget repeating the action."""
+    fake_ollama.queued_turns = [
+        tool_call("echo", text="same"),
+        tool_call("echo", text="same"),
+        tool_call("echo", text="same"),
+        respond("should never be reached"),
+    ]
+    execution = await planner.run("echo same forever", history=[], max_steps=5)
+    assert len(execution.steps) == 2
+    assert echo_tool.executions == ["same", "same"]
+    assert execution.reply == "echoed 'same'"
+
+
 async def test_invalid_args_fail_soft(
     planner: Planner, fake_ollama: FakeOllamaClient, echo_tool: EchoTool
 ) -> None:
@@ -190,6 +298,27 @@ async def test_invalid_args_fail_soft(
     assert echo_tool.executions == []
     assert execution.steps[0].result is not None
     assert "invalid arguments" in execution.steps[0].result.summary
+
+
+async def test_reminder_request_cannot_trigger_a_system_power_call(
+    settings: Settings, fake_ollama: FakeOllamaClient
+) -> None:
+    registry = ToolRegistry()
+    registry.register(ReminderTool())
+    manager = ModelManager(fake_ollama, settings)
+    planner = Planner(fake_ollama, manager, registry, SafetyGate(), settings)
+    fake_ollama.queued_turns = [
+        tool_call("system_power", action="restart"),
+        respond("What would you like me to remind you about on 17 July at 10 AM?"),
+    ]
+
+    execution = await planner.run("Add a reminder on 17 July at 10 AM", history=[])
+
+    assert execution.steps[0].tool == "system_power"
+    assert execution.steps[0].denied is False
+    assert execution.steps[0].result is not None
+    assert "no other action was run" in execution.steps[0].result.summary
+    assert execution.reply.startswith("What would you like")
 
 
 def test_ws_confirmation_roundtrip(
@@ -300,3 +429,104 @@ def test_sanitize_spoken_reply() -> None:
     assert sanitize_spoken_reply("See [the docs](https://example.com).") == "See the docs."
     assert sanitize_spoken_reply("**Done** — saved to `~/Desktop`.") == "Done — saved to ~/Desktop."
     assert sanitize_spoken_reply("plain text stays untouched") == "plain text stays untouched"
+
+
+@pytest.fixture
+def whatsapp_tool() -> WhatsAppEchoTool:
+    return WhatsAppEchoTool()
+
+
+@pytest.fixture
+def whatsapp_planner(
+    settings: Settings, fake_ollama: FakeOllamaClient, whatsapp_tool: WhatsAppEchoTool
+) -> Planner:
+    reg = ToolRegistry()
+    reg.register(whatsapp_tool)
+    manager = ModelManager(fake_ollama, settings)
+    return Planner(fake_ollama, manager, reg, SafetyGate(), settings)
+
+
+async def _approve(request: ConfirmationRequest) -> bool:
+    return True
+
+
+async def test_send_pronoun_reference_forwards_last_url(
+    whatsapp_planner: Planner, whatsapp_tool: WhatsAppEchoTool
+) -> None:
+    execution = await whatsapp_planner.run(
+        "send this link to mohan on whatsapp",
+        history=[],
+        confirmer=_approve,
+        last_url="https://example.com/cricket-scores",
+        last_text="Here's what I found.",
+    )
+    assert whatsapp_tool.sent == [("mohan", "https://example.com/cricket-scores")]
+    assert execution.reply == "Sent 'https://example.com/cricket-scores' to mohan."
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "this website link",
+        "that web page",
+        "the url",
+        "this page",
+        "the website",
+        "that site",
+    ],
+)
+async def test_send_natural_reference_variants_forward_last_url(
+    whatsapp_planner: Planner, whatsapp_tool: WhatsAppEchoTool, phrase: str
+) -> None:
+    """Real bug: only a fixed set of exact phrases ("this link", "that
+    link") was recognized as a reference, so a natural variant like "this
+    website link" fell through and was sent as literal text instead of the
+    actual URL."""
+    whatsapp_tool.sent.clear()
+    execution = await whatsapp_planner.run(
+        f"send {phrase} to mohan on whatsapp",
+        history=[],
+        confirmer=_approve,
+        last_url="https://example.com/cricket-scores",
+    )
+    assert whatsapp_tool.sent == [("mohan", "https://example.com/cricket-scores")]
+    assert "example.com" in execution.reply
+
+
+async def test_send_topic_overlap_forwards_last_content(
+    whatsapp_planner: Planner, whatsapp_tool: WhatsAppEchoTool
+) -> None:
+    """'send the cricket score' after searching 'cricket score yesterday'
+    should forward the last result, not literally send the phrase."""
+    execution = await whatsapp_planner.run(
+        "send the cricket score to mohan on whatsapp",
+        history=[],
+        confirmer=_approve,
+        last_query="cricket score yesterday",
+        last_url="https://example.com/cricket-scores",
+    )
+    assert whatsapp_tool.sent == [("mohan", "https://example.com/cricket-scores")]
+    assert "example.com" in execution.reply
+
+
+async def test_send_literal_message_is_not_treated_as_a_reference(
+    whatsapp_planner: Planner, whatsapp_tool: WhatsAppEchoTool
+) -> None:
+    execution = await whatsapp_planner.run(
+        "send hello to mohan on whatsapp",
+        history=[],
+        confirmer=_approve,
+        last_url="https://example.com/cricket-scores",
+    )
+    assert whatsapp_tool.sent == [("mohan", "hello")]
+    assert execution.reply == "Sent 'hello' to mohan."
+
+
+async def test_send_reference_with_no_prior_content_fails_honestly(
+    whatsapp_planner: Planner, whatsapp_tool: WhatsAppEchoTool
+) -> None:
+    execution = await whatsapp_planner.run(
+        "send this to mohan on whatsapp", history=[], confirmer=_approve,
+    )
+    assert whatsapp_tool.sent == []
+    assert "don't have anything recent" in execution.reply

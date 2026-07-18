@@ -71,6 +71,16 @@ do {
     let errorEvent = try JSONDecoder().decode(
         ChatStreamEvent.self, from: #"{"type": "error", "message": "Ollama down"}"#.data(using: .utf8)!)
     expect(errorEvent == .error("Ollama down"), "error event decodes")
+
+    let confirmation = try JSONDecoder().decode(
+        ChatStreamEvent.self,
+        from: #"{"type": "confirm_request", "tool": "browser_fill", "risk": "sensitive", "action": "browser_fill {…}"}"#.data(using: .utf8)!)
+    expect(
+        confirmation == .confirmation(
+            ConfirmationRequest(tool: "browser_fill", risk: "sensitive", action: "browser_fill {…}")
+        ),
+        "confirmation event decodes"
+    )
 } catch {
     failures += 1
     print("FAIL - stream event decoding threw: \(error)")

@@ -19,6 +19,7 @@ POST /voice/speak — {"text": ...} -> WAV bytes (debug/tests)
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -29,6 +30,7 @@ from fastapi import APIRouter, Request, Response, UploadFile, WebSocket, WebSock
 from pydantic import BaseModel, Field
 
 from app.core.ollama_client import ModelNotFoundError, OllamaUnavailableError
+from app.core.safety import ConfirmationRequest
 from app.speech.session import (
     ListeningStarted,
     NothingHeard,
@@ -90,6 +92,29 @@ async def voice_ws(websocket: WebSocket) -> None:
     chat_session = state.chat_service.open_session(None)
     await websocket.accept()
 
+    async def voice_confirmer(request: ConfirmationRequest) -> bool:
+        """Wait for an explicit Allow/Deny click from the floating overlay."""
+        await websocket.send_json(
+            {
+                "type": "confirm_request",
+                "tool": request.tool,
+                "risk": request.risk.value,
+                "action": request.action,
+            }
+        )
+        try:
+            while True:
+                message = await asyncio.wait_for(websocket.receive(), timeout=120)
+                if message.get("text") is None:
+                    # The microphone remains live while the user clicks; those
+                    # frames are not part of the already-completed command.
+                    continue
+                control = json.loads(message["text"])
+                if control.get("type") == "confirm_response":
+                    return bool(control.get("approved"))
+        except (TimeoutError, WebSocketDisconnect):
+            return False
+
     async def handle_utterance(audio: np.ndarray) -> None:
         text = await state.stt.transcribe(audio)
         if not text:
@@ -97,7 +122,9 @@ async def voice_ws(websocket: WebSocket) -> None:
             return
         await websocket.send_json({"type": "transcript", "text": text})
         try:
-            reply = await state.chat_service.respond(chat_session, text)
+            reply = await state.chat_service.respond(
+                chat_session, text, confirmer=voice_confirmer
+            )
         except (OllamaUnavailableError, ModelNotFoundError) as exc:
             await websocket.send_json({"type": "error", "message": str(exc)})
             return

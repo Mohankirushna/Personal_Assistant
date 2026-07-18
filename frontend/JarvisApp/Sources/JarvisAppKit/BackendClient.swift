@@ -46,7 +46,11 @@ public struct BackendClient {
     }
 
     /// Open /ws/chat, send one message, and stream events until "done"/"error".
-    public func streamChat(message: String, sessionId: String?) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+    public func streamChat(
+        message: String,
+        sessionId: String?,
+        confirmationHandler: @escaping @Sendable (ConfirmationRequest) async -> Bool
+    ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.path = "/ws/chat"
@@ -73,6 +77,14 @@ public struct BackendClient {
                         let event = try JSONDecoder().decode(ChatStreamEvent.self, from: data)
                         continuation.yield(event)
                         switch event {
+                        case let .confirmation(request):
+                            let approved = await confirmationHandler(request)
+                            let response = try JSONSerialization.data(withJSONObject: [
+                                "type": "confirm_response",
+                                "approved": approved,
+                            ])
+                            try await task.send(.string(String(decoding: response, as: UTF8.self)))
+                            continue
                         case .done, .error: break receiveLoop
                         case .token: continue
                         }

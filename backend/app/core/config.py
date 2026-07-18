@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     # Development escape hatch: skip confirmation prompts entirely.
     auto_approve: bool = False
 
+    # WAHA (optional self-hosted WhatsApp gateway, https://waha.devlike.pro).
+    # The API key is kept in the local environment, never in a chat session
+    # or tool argument.
+    waha_base_url: str | None = None
+    waha_api_key: str | None = None
+    waha_session: str = "default"
+    # Prepended to bare 10-digit numbers (spoken commands and locally saved
+    # contacts rarely include a country code, but WhatsApp chat IDs need one).
+    # Digits only, e.g. "91" for India, "1" for the US.
+    whatsapp_default_country_code: str | None = None
+
     log_level: str = "INFO"
 
     @field_validator("host")

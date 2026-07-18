@@ -30,14 +30,47 @@ public final class BackendProcessManager {
         if let fromDefaults = UserDefaults.standard.string(forKey: "backendDirectory") {
             return URL(fileURLWithPath: fromDefaults, isDirectory: true)
         }
-        let devTree = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("backend", isDirectory: true)
-        if FileManager.default.fileExists(atPath: devTree.appendingPathComponent("pyproject.toml").path) {
-            return devTree
+        // Development builds live at frontend/dist/Jarvis.app. Walk upward
+        // rather than assuming a fixed parent count, so the app can find the
+        // repository's sibling backend directory after it is bundled.
+        var directory = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<5 {
+            let candidate = directory.appendingPathComponent("backend", isDirectory: true)
+            if FileManager.default.fileExists(
+                atPath: candidate.appendingPathComponent("pyproject.toml").path
+            ) {
+                return candidate
+            }
+            directory.deleteLastPathComponent()
         }
         return nil
+    }
+
+    /// Finds uv without relying on the interactive-shell PATH.  launchd gives
+    /// login items a deliberately small PATH, which normally excludes the
+    /// per-user `~/.local/bin` installation used by uv.
+    public static func resolveUVExecutable() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        var candidates: [URL] = []
+
+        if let configured = environment["JARVIS_UV_PATH"], !configured.isEmpty {
+            candidates.append(URL(fileURLWithPath: configured))
+        }
+        candidates.append(
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/bin/uv")
+        )
+        candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/uv"))
+        candidates.append(URL(fileURLWithPath: "/usr/local/bin/uv"))
+
+        // Keep manually configured PATH installations working as a fallback.
+        for directory in (environment["PATH"] ?? "").split(separator: ":") {
+            candidates.append(URL(fileURLWithPath: String(directory)).appendingPathComponent("uv"))
+        }
+
+        return candidates.first { candidate in
+            FileManager.default.isExecutableFile(atPath: candidate.path)
+        }
     }
 
     /// True if a backend already answers /health on our port.
@@ -55,8 +88,11 @@ public final class BackendProcessManager {
         guard let backendDir = Self.resolveBackendDirectory() else {
             throw SpawnError.backendDirectoryNotFound
         }
+        guard let uvExecutable = Self.resolveUVExecutable() else {
+            throw SpawnError.uvNotFound
+        }
         let sessionToken = UUID().uuidString
-        try launch(backendDir: backendDir, token: sessionToken)
+        try launch(backendDir: backendDir, uvExecutable: uvExecutable, token: sessionToken)
         token = sessionToken
 
         // Wait for /health (model-free, so this is fast) up to 15s.
@@ -71,11 +107,12 @@ public final class BackendProcessManager {
         throw SpawnError.backendDidNotBecomeHealthy
     }
 
-    private func launch(backendDir: URL, token: String) throws {
+    private func launch(backendDir: URL, uvExecutable: URL, token: String) throws {
         let process = Process()
-        // Login shell so uv (usually in ~/.local/bin) is on PATH.
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "exec uv run jarvis-backend"]
+        // Use an absolute executable path. A login item's launchd PATH is
+        // usually only /usr/bin:/bin:/usr/sbin:/sbin.
+        process.executableURL = uvExecutable
+        process.arguments = ["run", "jarvis-backend"]
         process.currentDirectoryURL = backendDir
         var env = ProcessInfo.processInfo.environment
         env["JARVIS_AUTH_TOKEN"] = token
@@ -93,6 +130,7 @@ public final class BackendProcessManager {
 
     public enum SpawnError: LocalizedError {
         case backendDirectoryNotFound
+        case uvNotFound
         case backendDidNotBecomeHealthy
 
         public var errorDescription: String? {
@@ -101,6 +139,9 @@ public final class BackendProcessManager {
                 return "Backend not running and no backend directory found. "
                     + "Start it manually (cd backend && uv run jarvis-backend) "
                     + "or set JARVIS_BACKEND_DIR."
+            case .uvNotFound:
+                return "The uv executable could not be found. Install uv or set JARVIS_UV_PATH "
+                    + "to its absolute path."
             case .backendDidNotBecomeHealthy:
                 return "Spawned the backend but /health never came up. "
                     + "Check that `uv run jarvis-backend` works in the backend directory."
