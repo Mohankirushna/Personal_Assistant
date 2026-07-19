@@ -160,6 +160,41 @@ _BATTERY_STATUS = re.compile(
     r"(?:battery|charge)(?: percentage| percent| level| status)?"
     r"(?: (?:in|on) (?:my )?(?:laptop|macbook|mac))?$"
 )
+# Local-state questions MUST be checked before any web-search routing below:
+# "what is the time now" otherwise matches the live-info pattern (starts with
+# "what", contains "now") and gets web-searched — which once opened an
+# article about the Yogi Berra book "What Time Is It? You Mean Now?".
+# No "in <place>" variants: world time is not the local clock's job.
+_CLOCK_QUESTION = re.compile(
+    r"^(?:(?:can|could) you )?(?:please )?(?:tell me )?"
+    r"(?:what time is it|what is the time|whats the time|the time|time|"
+    r"current time|what is the current time|whats the current time|"
+    r"what day is (?:it|today)|what is the day|whats the day|"
+    r"(?:what is|whats) (?:the date|todays date)|todays date|current date|"
+    r"what is today|whats today)"
+    r"(?: right)?(?: now)?(?: today)?( please)?$"
+)
+# Listing a well-known folder is a Finder job, never a web search. Verb and
+# folder are matched separately (search, not fullmatch) so conversational
+# framing survives: "check my downloads folder, I want to know what files
+# I have" — which once got web-searched as "contents of Downloads folder".
+_FOLDER_LIST_VERB = re.compile(
+    r"\b(?:check|list|show|see|view|browse|whats? in|what is in|what all files|"
+    r"what files|files (?:in|inside|of)|contents of|what do i have)\b"
+)
+_FOLDER_LIST_NAME = re.compile(
+    r"\b(?P<folder>downloads?|documents?|desktop|applications|pictures|movies)\b"
+)
+_KNOWN_FOLDERS = {
+    "download": "~/Downloads",
+    "downloads": "~/Downloads",
+    "document": "~/Documents",
+    "documents": "~/Documents",
+    "desktop": "~/Desktop",
+    "applications": "/Applications",
+    "pictures": "~/Pictures",
+    "movies": "~/Movies",
+}
 _SYSTEM_POWER = re.compile(
     r"^(?P<action>restart|reboot|shut down|shutdown|power off|turn off)"
     r"(?: (?:my )?(?:laptop|macbook|mac|computer))?$"
@@ -224,6 +259,14 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
         return ToolCallRequest(name="system_power", arguments={"action": action})
     if _BATTERY_STATUS.fullmatch(normalized):
         return ToolCallRequest(name="battery_status", arguments={})
+    if _CLOCK_QUESTION.fullmatch(normalized):
+        return ToolCallRequest(name="clock", arguments={})
+    folder_name = _FOLDER_LIST_NAME.search(normalized)
+    if folder_name and _FOLDER_LIST_VERB.search(normalized):
+        return ToolCallRequest(
+            name="finder_list",
+            arguments={"path": _KNOWN_FOLDERS[folder_name.group("folder")]},
+        )
     volume_mute = _VOLUME_MUTE.fullmatch(normalized)
     if volume_mute:
         return ToolCallRequest(

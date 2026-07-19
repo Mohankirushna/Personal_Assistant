@@ -119,6 +119,63 @@ def test_ordinary_conversation_does_not_trigger_web_search() -> None:
 
 
 @pytest.mark.parametrize(
+    "utterance",
+    [
+        "What is the time now?",  # once web-searched -> a Yogi Berra book
+        "what time is it",
+        "What time is it right now?",
+        "whats the time",
+        "Tell me the time",
+        "current time",
+        "What day is it today?",
+        "what's today's date",
+        "What is the date?",
+    ],
+)
+def test_time_and_date_questions_use_the_local_clock(utterance: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None, f"{utterance!r} should match"
+    assert call.name == "clock"
+    assert call.arguments == {}
+
+
+def test_world_time_is_not_the_local_clocks_job() -> None:
+    call = match_fast_intent("what time is it in tokyo")
+    assert call is None or call.name != "clock"
+
+
+@pytest.mark.parametrize(
+    ("utterance", "path"),
+    [
+        # The exact phrasing that once became a web search about Downloads:
+        ("check my downloads folders i want to know what all files i have", "~/Downloads"),
+        ("What's in my Downloads folder?", "~/Downloads"),
+        ("show me the files in my downloads", "~/Downloads"),
+        ("list my documents", "~/Documents"),
+        ("what files do I have on my desktop", "~/Desktop"),
+        ("check my applications", "/Applications"),
+    ],
+)
+def test_known_folder_listing_uses_finder_not_the_web(utterance: str, path: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None, f"{utterance!r} should match"
+    assert call.name == "finder_list"
+    assert call.arguments == {"path": path}
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "play some music",  # music request, not a folder listing
+        "search where are my downloads on windows",  # about Windows, not this Mac
+    ],
+)
+def test_folder_listing_does_not_swallow_other_intents(utterance: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is None or call.name != "finder_list"
+
+
+@pytest.mark.parametrize(
     ("utterance", "browser"),
     [
         ("football score in google chrome", "Google Chrome"),
@@ -408,7 +465,6 @@ def test_matches_brightness_adjust_commands(utterance: str, arguments: dict[str,
         "pause my subscription",       # 'pause' but not media
         "continue",                    # follow-up, needs conversation context
         "continue the previous request",
-        "what time is it",
         "play a game with me",
         "",
     ],

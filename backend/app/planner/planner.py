@@ -53,6 +53,10 @@ Short commands are actions, not chit-chat. Map them to a tool call:
   "open Claude"          -> open_app(name="Claude")
   "open/launch <app>"    -> open_app(name=<app>)
   "battery percentage"   -> battery_status
+  "what time is it" / "today's date" -> clock
+  "what's in my Downloads folder" / "check my downloads" -> \
+finder_list(path="~/Downloads")
+  "find my <name> files" -> finder_search
   "restart/reboot Mac"   -> system_power(action="restart")
   "shut down Mac"        -> system_power(action="shutdown")
   "turn the volume up/down" -> volume(direction="up"/"down")
@@ -103,6 +107,14 @@ they want YouTube, Spotify, or Apple Music. Do not choose a platform yourself.
 File operations: "list/show files", "create folder", "delete file" → use
 finder_* tools (faster, no shell dependency). Use terminal_run only for
 complex shell logic or piped commands (grepping, parsing, chaining).
+
+LOCAL vs WEB: anything about THIS Mac — the user's files, folders,
+Downloads, Documents, Desktop, battery, running apps, volume, screen,
+clipboard, or the current time or date — is answered with local tools
+(clock, finder_list, finder_search, battery_status, list_running_apps).
+NEVER use a web or browser search for it: the internet does not know what
+is on this Mac or what time it is here. Web search is only for information
+that lives on the internet (facts, news, weather, prices, places).
 
 Rules:
 - NEVER say you did, played, opened, or checked something unless a tool \
@@ -463,7 +475,40 @@ class Planner:
                 )
                 execution.steps.append(step)
                 if is_repeat and step.result is not None:
-                    execution.reply = step.result.summary
+                    # The model is stuck reissuing a done call instead of
+                    # answering. The repeated tool is not necessarily the one
+                    # that answered the question (seen live: clock answered,
+                    # then the model wandered into volume twice — and the old
+                    # "reply with the repeated summary" said "Volume is 50%"
+                    # to a time question). Force one final TOOL-FREE turn so
+                    # the reply addresses the original request.
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": step.result.summary,
+                            "tool_name": call.name,
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "That action already ran; its result is above. "
+                                "Using the tool results in this conversation, answer "
+                                "my original request now in one or two short "
+                                "sentences. Do not request any more tools."
+                            ),
+                        }
+                    )
+                    final = await self._client.chat_turn(
+                        model=model,
+                        messages=messages,
+                        keep_alive=self._settings.llm_keep_alive,
+                        options=options,
+                    )
+                    execution.reply = (
+                        sanitize_spoken_reply(final.content) or step.result.summary
+                    )
                     return execution
                 if _is_hallucinating_unrelated_actions(execution.steps, utterance):
                     # Clear failed steps so the reply is honest ("couldn't" not

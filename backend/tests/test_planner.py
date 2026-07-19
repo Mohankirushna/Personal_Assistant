@@ -329,6 +329,36 @@ async def test_identical_repeated_tool_call_stops_the_loop_instead_of_looping(
     assert execution.reply == "echoed 'same'"
 
 
+async def test_repeat_after_derailing_still_answers_the_original_question(
+    settings: Settings, fake_ollama: FakeOllamaClient
+) -> None:
+    """Seen live: clock answered a time question, then the model wandered
+    into two identical volume calls. The repeat-stop must not parrot the
+    wandered tool's summary ("Volume is 50%") — it forces a final tool-free
+    turn that answers from all results in context."""
+    echo = EchoTool()
+    reminder = ReminderTool()
+    reg = ToolRegistry()
+    reg.register(echo)
+    reg.register(reminder)
+    planner = Planner(
+        fake_ollama, ModelManager(fake_ollama, settings), reg, SafetyGate(), settings
+    )
+    fake_ollama.queued_turns = [
+        tool_call("echo", text="4 AM"),           # the actual answer
+        tool_call("create_reminder", title="x"),  # derail…
+        tool_call("create_reminder", title="x"),  # …and repeat -> stop
+        respond("It is 4 AM."),                   # forced final tool-free turn
+    ]
+    execution = await planner.run("what time is it basically", history=[])
+    assert execution.reply == "It is 4 AM."
+    assert echo.executions == ["4 AM"]
+    # The repeated call executes once more before detection (matching
+    # test_identical_repeated_tool_call_stops_the_loop_instead_of_looping),
+    # but the loop stops there instead of burning the step budget.
+    assert reminder.executions == ["x", "x"]
+
+
 async def test_invalid_args_fail_soft(
     planner: Planner, fake_ollama: FakeOllamaClient, echo_tool: EchoTool
 ) -> None:
