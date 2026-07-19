@@ -8,13 +8,21 @@ from pathlib import Path
 import pytest
 
 from app.planner.schemas import RiskLevel
-from app.tools.browser.browser import (
-    BrowserDownloadTool,
-    BrowserFillTool,
-    BrowserOpenTool,
-    BrowserSearchTool,
-    BrowserSession,
-)
+
+# Skip all tests if optional dependencies are missing
+try:
+    from app.tools.browser.browser import (
+        BrowserDownloadTool,
+        BrowserFillTool,
+        BrowserOpenTool,
+        BrowserSearchTool,
+        BrowserSession,
+    )
+    _has_browser_deps = True
+except (ImportError, ModuleNotFoundError):
+    _has_browser_deps = False
+
+pytestmark = pytest.mark.skipif(not _has_browser_deps, reason="playwright/ddgs not installed")
 
 
 def test_fill_risk_classification() -> None:

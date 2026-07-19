@@ -32,7 +32,7 @@ tts-piper = [
     "piper-tts>=1.2",
 ]
 memory = [
-    "chromadb>=0.5",
+    "chromadb>=0.6",
 ]
 browser = [
     "playwright>=1.47",

@@ -14,6 +14,13 @@ from app.tts.say import SayTTS
 
 pytestmark = pytest.mark.integration
 
+# Skip all tests if optional voice dependencies are missing
+try:
+    import faster_whisper  # noqa: F401
+    import openwakeword  # noqa: F401
+except ImportError:
+    pytestmark = pytest.mark.skipif(True, reason="faster_whisper/openwakeword not installed")
+
 
 async def test_say_tts_produces_wav() -> None:
     wav_bytes = await SayTTS().synthesize("Hello from Jarvis.")
