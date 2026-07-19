@@ -76,6 +76,8 @@ async def main() -> None:
                             print("🎙  listening…")
                         case "transcript":
                             print(f"you: {event['text']}")
+                        case "tool":
+                            print(f"⚙️  {event['tool']}: {event['status']}")
                         case "reply":
                             print(f"jarvis: {event['text']}")
                         case "nothing_heard":

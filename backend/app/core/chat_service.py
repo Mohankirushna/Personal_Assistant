@@ -19,7 +19,7 @@ from app.core.ollama_client import Message, OllamaLike
 from app.core.safety import Confirmer
 from app.core.sessions import ChatSession, SessionStore
 from app.memory.service import MemoryService
-from app.planner.planner import Planner
+from app.planner.planner import Planner, StepObserver
 from app.planner.schemas import PlanExecution
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ class ChatService:
         session: ChatSession,
         user_message: str,
         confirmer: Confirmer | None = None,
+        on_step: StepObserver | None = None,
     ) -> str:
         if self._planner is not None:
             history = list(session.messages)
@@ -92,6 +93,7 @@ class ChatService:
                 last_query=session.last_query,
                 last_url=session.last_url,
                 last_text=session.last_text,
+                on_step=on_step,
             )
             # Store the reply PLUS a compact trace of what actually ran, so
             # follow-ups can reference concrete outcomes (file paths, track
@@ -123,11 +125,14 @@ class ChatService:
         session: ChatSession,
         user_message: str,
         confirmer: Confirmer | None = None,
+        on_step: StepObserver | None = None,
     ) -> AsyncIterator[str]:
         """Yield reply chunks. Planner replies arrive as a single chunk;
         plain chat streams token-by-token."""
         if self._planner is not None:
-            reply = await self.respond(session, user_message, confirmer=confirmer)
+            reply = await self.respond(
+                session, user_message, confirmer=confirmer, on_step=on_step
+            )
             yield reply
             return
 

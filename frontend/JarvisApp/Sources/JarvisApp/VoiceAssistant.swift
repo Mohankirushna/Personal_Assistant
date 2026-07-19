@@ -11,6 +11,7 @@ final class VoiceAssistant {
         case wakeDetected
         case listening
         case transcript(String)
+        case toolActivity(tool: String, status: String)
         case reply(String)
         case confirmation(ConfirmationRequest)
         case nothingHeard
@@ -129,6 +130,11 @@ final class VoiceAssistant {
         case "wake": await report(.wakeDetected)
         case "listening": await report(.listening)
         case "transcript": await report(.transcript(payload["text"] as? String ?? ""))
+        case "tool":
+            await report(.toolActivity(
+                tool: payload["tool"] as? String ?? "",
+                status: payload["status"] as? String ?? ""
+            ))
         case "reply": await report(.reply(payload["text"] as? String ?? ""))
         case "confirm_request":
             guard

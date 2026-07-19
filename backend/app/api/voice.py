@@ -8,6 +8,8 @@ WS /ws/voice — bidirectional voice loop:
                       {"type": "listening"}
                       {"type": "transcript", "text"}
                       {"type": "nothing_heard"}
+                      {"type": "tool", "tool", "status"}  live tool activity;
+                          status: "running" | "ok" | "failed" | "denied"
                       {"type": "reply", "session_id", "text"}
                       binary WAV message             spoken reply audio
                       {"type": "audio_end"}
@@ -115,6 +117,12 @@ async def voice_ws(websocket: WebSocket) -> None:
         except (TimeoutError, WebSocketDisconnect):
             return False
 
+    async def tool_activity(tool: str, status: str) -> None:
+        """Live 'what Jarvis is doing' feed for the overlay. The planner can
+        take many seconds between transcript and reply; without this the UI
+        sits silent while tools run."""
+        await websocket.send_json({"type": "tool", "tool": tool, "status": status})
+
     async def handle_utterance(audio: np.ndarray) -> None:
         text = await state.stt.transcribe(audio)
         if not text:
@@ -123,7 +131,7 @@ async def voice_ws(websocket: WebSocket) -> None:
         await websocket.send_json({"type": "transcript", "text": text})
         try:
             reply = await state.chat_service.respond(
-                chat_session, text, confirmer=voice_confirmer
+                chat_session, text, confirmer=voice_confirmer, on_step=tool_activity
             )
         except (OllamaUnavailableError, ModelNotFoundError) as exc:
             await websocket.send_json({"type": "error", "message": str(exc)})

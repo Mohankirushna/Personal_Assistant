@@ -143,6 +143,48 @@ async def test_tool_then_respond(
     assert execution.steps[0].result is not None and execution.steps[0].result.ok
 
 
+async def test_on_step_observer_sees_tool_lifecycle(
+    planner: Planner, fake_ollama: FakeOllamaClient
+) -> None:
+    """The observer gets (tool, "running") before execution and the outcome
+    after — the voice overlay's live activity feed depends on this order."""
+    fake_ollama.queued_turns = [tool_call("echo", text="hi"), respond("Echoed for you.")]
+    events: list[tuple[str, str]] = []
+
+    async def observer(tool: str, status: str) -> None:
+        events.append((tool, status))
+
+    await planner.run("please echo hi", history=[], on_step=observer)
+    assert events == [("echo", "running"), ("echo", "ok")]
+
+
+async def test_on_step_observer_sees_denial(
+    planner: Planner, fake_ollama: FakeOllamaClient
+) -> None:
+    fake_ollama.queued_turns = [tool_call("wipe", path="/tmp/x"), respond("I couldn't.")]
+    events: list[tuple[str, str]] = []
+
+    async def observer(tool: str, status: str) -> None:
+        events.append((tool, status))
+
+    await planner.run("wipe /tmp/x", history=[], on_step=observer)
+    assert events == [("wipe", "running"), ("wipe", "denied")]
+
+
+async def test_on_step_observer_failure_never_breaks_the_plan(
+    planner: Planner, fake_ollama: FakeOllamaClient, echo_tool: EchoTool
+) -> None:
+    """A dead UI socket must not abort the command it was watching."""
+    fake_ollama.queued_turns = [tool_call("echo", text="hi"), respond("Echoed for you.")]
+
+    async def broken_observer(tool: str, status: str) -> None:
+        raise RuntimeError("socket closed")
+
+    execution = await planner.run("please echo hi", history=[], on_step=broken_observer)
+    assert echo_tool.executions == ["hi"]
+    assert execution.reply == "Echoed for you."
+
+
 async def test_direct_respond_needs_no_tools(
     planner: Planner, fake_ollama: FakeOllamaClient, echo_tool: EchoTool
 ) -> None:

@@ -103,6 +103,43 @@ def test_voice_ws_full_loop(voice_client: TestClient, fake_ollama: FakeOllamaCli
         assert ws.receive_json()["type"] == "audio_end"
 
 
+def test_voice_ws_streams_tool_activity(
+    settings: Settings, fake_ollama: FakeOllamaClient, fake_stt: FakeSTT
+) -> None:
+    """With a planner active, tool start/finish events reach the client
+    between transcript and reply, so the overlay can show live activity."""
+    from app.core.ollama_client import ChatTurn, ToolCallRequest
+    from tests.test_planner import EchoTool
+
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    fake_ollama.queued_turns = [
+        ChatTurn(tool_calls=[ToolCallRequest(name="echo", arguments={"text": "hi"})]),
+        ChatTurn(content="Echoed for you."),
+    ]
+    app = create_app(
+        settings=settings,
+        ollama_client=fake_ollama,
+        stt=fake_stt,
+        tts=FakeTTS(),
+        wake_detector=FakeWake(scores=[0.9]),
+        registry=registry,
+        enable_memory=False,
+    )
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        ws.send_json({"type": "start_listening"})
+        assert ws.receive_json()["type"] == "listening"
+        ws.send_bytes(frames(4, loud=True))
+        ws.send_bytes(frames(12, loud=False))
+
+        assert ws.receive_json()["type"] == "transcript"
+        assert ws.receive_json() == {"type": "tool", "tool": "echo", "status": "running"}
+        assert ws.receive_json() == {"type": "tool", "tool": "echo", "status": "ok"}
+        reply = ws.receive_json()
+        assert reply["type"] == "reply"
+        assert reply["text"] == "Echoed for you."
+
+
 def test_voice_ws_push_to_talk(voice_client: TestClient) -> None:
     with voice_client.websocket_connect("/ws/voice") as ws:
         ws.send_json({"type": "start_listening"})

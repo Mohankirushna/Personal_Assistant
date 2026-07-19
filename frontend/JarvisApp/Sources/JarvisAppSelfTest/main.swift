@@ -103,6 +103,18 @@ expect(
     anonymous.authorizedRequest(path: "chat").value(forHTTPHeaderField: "Authorization") == nil,
     "no token means no header")
 
+// MARK: Tool activity phrases
+expect(
+    ToolActivity.phrase(forTool: "brave_search_open_first") == "Searching the web",
+    "known tool maps to a friendly phrase")
+expect(
+    ToolActivity.phrase(forTool: "finder_create_folder") == "Working with your files",
+    "finder_* tools share the files phrase")
+expect(
+    ToolActivity.phrase(forTool: "my_custom_plugin") == "Running my custom plugin",
+    "unknown tool falls back to a readable name")
+expect(ToolActivity.phrase(forTool: "") == "Working on it", "empty tool name is handled")
+
 if failures > 0 {
     print("\n\(failures) failure(s)")
     exit(1)

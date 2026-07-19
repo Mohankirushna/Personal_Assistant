@@ -78,6 +78,8 @@ Server → client:
 {"type": "wake", "score": 0.82}
 {"type": "listening"}
 {"type": "transcript", "text": "what time is it"}
+{"type": "tool", "tool": "clock", "status": "running"}  // live tool activity;
+                    // status: "running" | "ok" | "failed" | "denied"
 {"type": "reply", "session_id": "abc", "text": "It's 3:04 PM."}
 <binary WAV frame>                              // spoken reply
 {"type": "audio_end"}

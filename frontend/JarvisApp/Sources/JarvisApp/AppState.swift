@@ -117,6 +117,17 @@ final class AppState: ObservableObject {
             voiceStatus = "Voice: Thinking…"
             if !text.isEmpty { messages.append(ChatMessage(role: .user, text: text)) }
             showVoiceOverlay(transcript: text, reply: "", isReplying: false)
+        case let .toolActivity(tool, status):
+            // Only "running" drives the UI; outcomes are covered by the
+            // reply (or the confirmation flow for denials).
+            guard status == "running" else { break }
+            let phrase = ToolActivity.phrase(forTool: tool)
+            voiceStatus = "Voice: \(phrase)…"
+            showVoiceOverlay(
+                transcript: voiceOverlayTranscript,
+                reply: "\(phrase)…",
+                isReplying: true
+            )
         case let .reply(text):
             voiceStatus = "Voice: Listening for “Hey Jarvis”"
             if !text.isEmpty { messages.append(ChatMessage(role: .assistant, text: text)) }

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 from urllib.parse import unquote
@@ -28,6 +29,12 @@ from app.planner.schemas import PlanExecution, PlanStep, RiskLevel, ToolResult
 from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Observes tool execution for live UI feedback: called with (tool_name,
+# status), status one of "running" | "ok" | "failed" | "denied". Observers
+# are best-effort — a failure (e.g. the UI's socket died) never aborts the
+# plan itself.
+StepObserver = Callable[[str, str], Awaitable[None]]
 
 PLANNER_PROMPT = """\
 You are Jarvis, a macOS desktop assistant. You control the computer ONLY \
@@ -271,6 +278,23 @@ class Planner:
             )
         ]
 
+    @staticmethod
+    async def _notify(on_step: StepObserver | None, tool: str, status: str) -> None:
+        if on_step is None:
+            return
+        try:
+            await on_step(tool, status)
+        except Exception:  # noqa: BLE001 - observers must never abort the plan
+            logger.debug("Step observer failed for %s/%s", tool, status, exc_info=True)
+
+    @staticmethod
+    def _step_status(step: PlanStep) -> str:
+        if step.denied:
+            return "denied"
+        if step.result is not None and step.result.ok:
+            return "ok"
+        return "failed"
+
     async def run(
         self,
         utterance: str,
@@ -281,6 +305,7 @@ class Planner:
         last_query: str | None = None,
         last_url: str | None = None,
         last_text: str | None = None,
+        on_step: StepObserver | None = None,
     ) -> PlanExecution:
         """Execute the plan-act loop for one user turn."""
         execution = PlanExecution(utterance=utterance)
@@ -310,7 +335,9 @@ class Planner:
                     arguments={**fast_call.arguments, "message": content},
                 )
         if fast_call is not None and self._registry.get(fast_call.name) is not None:
+            await self._notify(on_step, fast_call.name, "running")
             step = await self._execute_tool_call(fast_call, confirmer)
+            await self._notify(on_step, fast_call.name, self._step_status(step))
             execution.steps.append(step)
             if step.result is not None:
                 execution.reply = step.result.summary
@@ -415,7 +442,9 @@ class Planner:
                         ),
                     )
                 else:
+                    await self._notify(on_step, call.name, "running")
                     step = await self._execute_tool_call(call, confirmer)
+                    await self._notify(on_step, call.name, self._step_status(step))
                 # A small model occasionally reissues an identical successful
                 # call instead of recognizing the task is already done (e.g.
                 # setting volume to the same level three times), looping
