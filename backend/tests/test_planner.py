@@ -602,3 +602,66 @@ async def test_send_reference_with_no_prior_content_fails_honestly(
     )
     assert whatsapp_tool.sent == []
     assert "don't have anything recent" in execution.reply
+
+
+def test_tool_pruning_saves_tokens(settings: Settings, fake_ollama: FakeOllamaClient) -> None:
+    """Tool pruning reduces the tool-spec overhead from ~4.2K to ~400-2K
+    tokens on typical commands, keeping the planner's context under budget."""
+    import json
+
+    from app.tools.registry import ToolRegistry
+
+    full_registry = ToolRegistry()
+    full_registry.discover()
+    manager = ModelManager(fake_ollama, settings)
+    planner = Planner(fake_ollama, manager, full_registry, SafetyGate(), settings)
+
+    all_tools = list(full_registry.list())
+    all_specs = [t.llm_spec() for t in all_tools]
+    all_json = json.dumps(all_specs)
+    base_tokens = len(all_json) // 4
+
+    test_cases = [
+        ("what time is it", ["clock"]),           # ~3 tools
+        ("take a screenshot", ["screenshot"]),    # ~2 tools
+        ("play some music", ["music", "spotify"]),  # ~4 tools
+        ("find my files", ["finder"]),            # ~9 tools
+    ]
+
+    for utterance, expected_keywords in test_cases:
+        pruned_names = planner._prune_tools(utterance)
+        assert pruned_names is not None, f"{utterance!r} should prune to some tools"
+        assert len(pruned_names) < len(
+            all_tools
+        ), f"{utterance!r} should reduce tool count"
+
+        pruned_specs = [t.llm_spec() for t in all_tools if t.name in pruned_names]
+        pruned_json = json.dumps(pruned_specs)
+        pruned_tokens = len(pruned_json) // 4
+        savings_pct = 100 * (1 - pruned_tokens / base_tokens)
+
+        # Pruning should save at least 50% of token overhead.
+        assert (
+            savings_pct > 50
+        ), f"{utterance!r}: only {savings_pct:.0f}% savings, need > 50%"
+
+
+def test_tool_pruning_fallback_on_vague_query(
+    settings: Settings, fake_ollama: FakeOllamaClient
+) -> None:
+    """When a query is too vague (< 2 matching tools), pruning returns None
+    (include all tools) rather than risk losing what's needed."""
+    from app.tools.registry import ToolRegistry
+
+    full_registry = ToolRegistry()
+    full_registry.discover()
+    manager = ModelManager(fake_ollama, settings)
+    planner = Planner(fake_ollama, manager, full_registry, SafetyGate(), settings)
+
+    # A completely opaque phrase matches nothing.
+    result = planner._prune_tools("xyz zyx abc")
+    assert result is None, "opaque phrase should get all tools (fallback)"
+
+    # A query that matches only one tool should fallback.
+    result = planner._prune_tools("reminiscent")  # matches ~1 tool (reminder)
+    assert result is None, "< 2 matches should fallback to all tools"
