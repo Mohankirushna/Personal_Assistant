@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from app.core.config import Settings, get_settings
 from app.planner.schemas import RiskLevel, ToolResult
 from app.tools import _contacts
-from app.tools._common import applescript_quote, run_command, run_osascript
+from app.tools._common import CommandOutput, applescript_quote, run_command, run_osascript
 from app.tools.base import Tool
 
 # How many of the newest inbox messages to scan for unread ones. Bounded so
@@ -34,7 +34,7 @@ _AUTOMATION_HELP = (
 )
 
 
-async def _run_mail_script(script: str):
+async def _run_mail_script(script: str) -> CommandOutput:
     """Run a Mail AppleScript, launching Mail hidden first (scripting an app
     that isn't running fails with -600)."""
     await run_command(["/usr/bin/open", "-g", "-j", "-a", "Mail"])
