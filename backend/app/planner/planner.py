@@ -81,8 +81,11 @@ finder_list(path="~/Downloads")
   "send <message> on WhatsApp to <name or number>" -> \
 whatsapp_send(recipient=<contact name or number>, message=<message>)
   "check my email" -> check_email
+  "any mail from <name>" -> check_email(sender=<name>)
+  "summarize my emails" -> summarize_inbox
   "send an email to <name> saying <text>" -> \
 send_email(recipient=<contact name or address>, body=<text>)
+  "reply to the latest email saying <text>" -> reply_email(body=<text>)
 
 When the user gives only a brief ("email X asking them to join Monday, make
 it professional"), YOU compose the full message body in the requested tone
@@ -154,7 +157,7 @@ def _tool_spec(name: str, description: str, schema: dict[str, Any]) -> dict[str,
 
 # Fast-path tools that return raw content to read rather than a finished
 # reply — their output is handed to the model to synthesize a spoken answer.
-_ANSWER_FROM_RESULT_TOOLS = {"web_answer"}
+_ANSWER_FROM_RESULT_TOOLS = {"web_answer", "summarize_inbox"}
 
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")

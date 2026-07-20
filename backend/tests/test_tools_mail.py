@@ -50,6 +50,13 @@ def _mock_contact_emails(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
     monkeypatch.setattr(contacts_module, "run_command", fake_open)
 
 
+def _scan_output(unread: int, messages: list[tuple[str, str, str]]) -> str:
+    """Build the stdout format _scan_unread parses: count@@ then
+    sender||subject||body@@@REC@@@ per message."""
+    body = "".join(f"{s}||{subj}||{b}@@@REC@@@" for s, subj, b in messages)
+    return f"{unread}@@{body}"
+
+
 def test_send_email_is_sensitive_so_the_gate_confirms_it() -> None:
     assert SendEmailTool.risk_level is RiskLevel.SENSITIVE
 
@@ -57,19 +64,102 @@ def test_send_email_is_sensitive_so_the_gate_confirms_it() -> None:
 async def test_check_email_reports_unread_with_senders(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_mail(
         monkeypatch,
-        "3@@\nAlice <alice@example.com>||Project update\nBob||Lunch?\n",
+        _scan_output(3, [
+            ("Alice <alice@example.com>", "Project update", ""),
+            ("Bob", "Lunch?", ""),
+        ]),
     )
     result = await CheckEmailTool().execute({})
     assert result.ok, result.summary
     assert result.data["unread"] == 3
+    assert len(result.data["messages"]) == 2
     assert "Alice" in result.summary and "Project update" in result.summary
 
 
 async def test_check_email_zero_unread(monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_mail(monkeypatch, "0@@\n")
+    _mock_mail(monkeypatch, _scan_output(0, []))
     result = await CheckEmailTool().execute({})
     assert result.ok, result.summary
     assert result.summary == "No unread email."
+
+
+async def test_check_email_from_specific_sender(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_mail(monkeypatch, _scan_output(9, [("Alice <a@x.com>", "Re: project", "")]))
+    result = await CheckEmailTool().execute({"sender": "Alice"})
+    assert result.ok, result.summary
+    assert "1 unread from Alice" in result.summary
+    assert "Re: project" in result.summary
+
+
+async def test_check_email_from_sender_none_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_mail(monkeypatch, _scan_output(9, []))
+    result = await CheckEmailTool().execute({"sender": "Zoe"})
+    assert result.ok, result.summary
+    assert result.summary == "No unread email from Zoe."
+
+
+async def test_summarize_inbox_returns_bodies_for_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.mail import SummarizeInboxTool
+
+    _mock_mail(
+        monkeypatch,
+        _scan_output(2, [
+            ("Alice", "Deadline", "The report is due Friday."),
+            ("Bob", "Lunch", "Are you free at noon?"),
+        ]),
+    )
+    result = await SummarizeInboxTool().execute({})
+    assert result.ok, result.summary
+    assert "The report is due Friday." in result.summary  # body included
+    assert "Are you free at noon?" in result.summary
+
+
+async def test_reply_email_sends_re_subject_to_original_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.mail import ReplyEmailTool
+
+    scripts: list[str] = []
+
+    async def fake_osascript(script: str, timeout: float = 30.0) -> CommandOutput:
+        scripts.append(script)
+        if "extract address" in script:  # _latest_unread lookup
+            return CommandOutput(0, "alice@example.com||Alice <alice@example.com>||Project", "")
+        return CommandOutput(0, "sent", "")  # _send_message
+
+    async def fake_open(argv: list[str], cwd=None, timeout=30.0) -> CommandOutput:
+        return CommandOutput(0, "", "")
+
+    monkeypatch.setattr(mail_module, "run_osascript", fake_osascript)
+    monkeypatch.setattr(mail_module, "run_command", fake_open)
+
+    result = await ReplyEmailTool(Settings()).execute({"body": "Got it, thanks."})
+    assert result.ok, result.summary
+    assert "Replied to Alice" in result.summary
+    send_script = scripts[-1]
+    assert 'address:"alice@example.com"' in send_script
+    assert 'subject:"Re: Project"' in send_script
+
+
+async def test_reply_email_no_unread_fails_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tools.mail import ReplyEmailTool
+
+    _mock_mail(monkeypatch, "")  # _latest_unread returns nothing
+    result = await ReplyEmailTool(Settings()).execute({"body": "hi"})
+    assert not result.ok
+    assert "no unread email" in result.summary
+
+
+def test_reply_email_is_sensitive_and_previews_the_reply() -> None:
+    from app.tools.mail import ReplyEmailTool
+
+    tool = ReplyEmailTool(Settings())
+    assert tool.risk_level is RiskLevel.SENSITIVE
+    args = tool.args_model.model_validate({"body": "See you then."})
+    preview = tool.confirmation_action(args)
+    assert preview is not None and "See you then." in preview
 
 
 async def test_check_email_permission_error_names_the_automation_pane(

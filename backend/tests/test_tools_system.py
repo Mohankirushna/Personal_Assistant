@@ -48,7 +48,7 @@ def test_discovery_finds_the_whole_suite() -> None:
         "media_control", "youtube_play", "spotify_play", "spotify_open_playlist",
         "music_platform_prompt", "news_search",
         "whatsapp_send",
-        "check_email", "send_email",
+        "check_email", "send_email", "summarize_inbox", "reply_email",
         "calendar", "timer", "focus_mode",
         "list_bluetooth_devices",
         "window_arrange", "brightness",

@@ -96,6 +96,20 @@ _SEND_EMAIL = re.compile(
     r"^(?:send (?:an |a )?email to|email) (?P<recipient>.+?) "
     r"(?:saying|that says|with message) (?P<body>.+)$"
 )
+_SUMMARIZE_INBOX = re.compile(
+    r"^(?:summari[sz]e|sum up|give me a summary of|what(?:'s| is| are)? in) "
+    r"(?:my )?(?:unread )?(?:emails?|inbox|mail)"
+    r"(?: (?:about|regarding))?$"
+    r"|^what(?:'s| are)? my (?:unread )?(?:emails?|mail) about$"
+)
+_CHECK_EMAIL_FROM = re.compile(
+    r"^(?:any|do i have(?: any)?|is there(?: any)?|check(?: for)?) "
+    r"(?:new |unread )?(?:emails?|mail) from (?P<sender>.+)$"
+)
+_REPLY_EMAIL = re.compile(
+    r"^reply(?: to)?(?: the)?(?: latest| last| newest)?(?: email| mail)?"
+    r"(?: from (?P<sender>.+?))? (?:saying|that says|with) (?P<body>.+)$"
+)
 
 
 def _whatsapp_recipient(raw: str) -> str:
@@ -461,6 +475,13 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
                     "message": whatsapp_send.group("message"),
                 },
             )
+    if _SUMMARIZE_INBOX.fullmatch(normalized):
+        return ToolCallRequest(name="summarize_inbox", arguments={})
+    check_from = _CHECK_EMAIL_FROM.fullmatch(normalized)
+    if check_from:
+        return ToolCallRequest(
+            name="check_email", arguments={"sender": check_from.group("sender").strip()}
+        )
     if _CHECK_EMAIL.fullmatch(normalized):
         return ToolCallRequest(name="check_email", arguments={})
     # Email needs a gentler normalization: the standard one strips @ and .
@@ -476,6 +497,12 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
                 "body": send_email.group("body"),
             },
         )
+    reply_email = _REPLY_EMAIL.fullmatch(normalized)
+    if reply_email:
+        reply_args: dict[str, object] = {"body": reply_email.group("body")}
+        if reply_email.group("sender"):
+            reply_args["sender"] = reply_email.group("sender").strip()
+        return ToolCallRequest(name="reply_email", arguments=reply_args)
     # A request such as "What football scores happened yesterday?" is an
     # implicit web search. Keep this after the explicit news command so it
     # retains its dedicated news-search behaviour.

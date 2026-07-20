@@ -406,6 +406,49 @@ def test_matches_send_email_commands(utterance: str, recipient: str, body: str) 
 
 
 @pytest.mark.parametrize(
+    "utterance",
+    ["summarize my emails", "summarize my unread emails", "summarize my inbox",
+     "what are my unread emails about", "sum up my mail"],
+)
+def test_matches_summarize_inbox(utterance: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "summarize_inbox"
+    assert call.arguments == {}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "sender"),
+    [
+        ("any mail from alice", "alice"),
+        ("do i have any new emails from mohan kirushna", "mohan kirushna"),
+        ("check for mail from the professor", "the professor"),
+    ],
+)
+def test_matches_check_email_from_sender(utterance: str, sender: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "check_email"
+    assert call.arguments == {"sender": sender}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "expected"),
+    [
+        ("reply to the latest email saying I will be there", {"body": "i will be there"}),
+        ("reply saying thanks", {"body": "thanks"}),
+        ("reply to the last email from alice saying got it",
+         {"sender": "alice", "body": "got it"}),
+    ],
+)
+def test_matches_reply_email(utterance: str, expected: dict[str, object]) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "reply_email"
+    assert call.arguments == expected
+
+
+@pytest.mark.parametrize(
     ("utterance", "arguments"),
     [
         ("mute", {"muted": True}),
