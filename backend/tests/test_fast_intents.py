@@ -366,6 +366,32 @@ def test_matches_recent_news_commands(utterance: str, arguments: dict[str, objec
 
 
 @pytest.mark.parametrize(
+    "utterance",
+    ["check my email", "check my inbox", "any new emails", "read my mail", "check email"],
+)
+def test_matches_check_email_commands(utterance: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "check_email"
+    assert call.arguments == {}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "recipient", "body"),
+    [
+        ("send an email to mohan kirushna saying meeting at 5", "mohan kirushna", "meeting at 5"),
+        ("email mohan saying I will be late", "mohan", "i will be late"),
+        ("send email to a@b.co with message hello there", "a@b.co", "hello there"),
+    ],
+)
+def test_matches_send_email_commands(utterance: str, recipient: str, body: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "send_email"
+    assert call.arguments == {"recipient": recipient, "body": body}
+
+
+@pytest.mark.parametrize(
     ("utterance", "arguments"),
     [
         ("mute", {"muted": True}),

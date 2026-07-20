@@ -32,6 +32,13 @@ class Tool(abc.ABC):
     def assess_risk(self, args: BaseModel) -> RiskLevel:
         return self.risk_level
 
+    def confirmation_action(self, args: BaseModel) -> str | None:
+        """Human-readable action text for the confirmation prompt, so the
+        user reviews what will actually happen (e.g. the full email body)
+        instead of raw JSON. None falls back to the generic representation.
+        """
+        return None
+
     @abc.abstractmethod
     async def run(self, args: BaseModel) -> ToolResult: ...
 

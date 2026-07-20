@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from app.core.config import Settings
-from app.tools import whatsapp as whatsapp_module
+from app.tools import _contacts as contacts_module
 from app.tools._common import CommandOutput
 from app.tools.whatsapp import WhatsAppSendTool
 
@@ -37,8 +37,8 @@ def _mock_contacts(
         assert argv[:2] == ["/usr/bin/open", "-g"]  # Contacts launched hidden first
         return CommandOutput(0, "", "")
 
-    monkeypatch.setattr(whatsapp_module, "run_osascript", fake_osascript)
-    monkeypatch.setattr(whatsapp_module, "run_command", fake_open)
+    monkeypatch.setattr(contacts_module, "run_osascript", fake_osascript)
+    monkeypatch.setattr(contacts_module, "run_command", fake_open)
 
 
 def _capture_post(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -106,7 +106,7 @@ async def test_send_uses_spoken_number_without_contacts_lookup(
     async def explode(script: str, timeout: float = 30.0) -> CommandOutput:
         raise AssertionError("Contacts must not be queried when a number is given")
 
-    monkeypatch.setattr(whatsapp_module, "run_osascript", explode)
+    monkeypatch.setattr(contacts_module, "run_osascript", explode)
     sent = _capture_post(monkeypatch)
     result = await WhatsAppSendTool(_settings()).execute(
         {"recipient": "Mohan kirushna 9080209303", "message": "hello"}

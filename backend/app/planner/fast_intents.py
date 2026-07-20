@@ -88,6 +88,14 @@ _WHATSAPP_PATTERNS = [
 ]
 # Trailing phone number in a recipient phrase such as "mohan kirushna 9080209303".
 _WHATSAPP_PHONE_TAIL = re.compile(r"^(?:(?P<name>.+?) )?(?P<number>\d[\d ]{5,}\d)$")
+_CHECK_EMAIL = re.compile(
+    r"^(?:check|read|show me|open)(?: my)?(?: new)? (?:emails?|mail|inbox)$"
+    r"|^(?:any|do i have(?: any)?) new (?:emails?|mail)$"
+)
+_SEND_EMAIL = re.compile(
+    r"^(?:send (?:an |a )?email to|email) (?P<recipient>.+?) "
+    r"(?:saying|that says|with message) (?P<body>.+)$"
+)
 
 
 def _whatsapp_recipient(raw: str) -> str:
@@ -453,6 +461,21 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
                     "message": whatsapp_send.group("message"),
                 },
             )
+    if _CHECK_EMAIL.fullmatch(normalized):
+        return ToolCallRequest(name="check_email", arguments={})
+    # Email needs a gentler normalization: the standard one strips @ and .
+    # which would mangle a typed address like a@b.co into "abco".
+    address_friendly = re.sub(r"[^\w\s@.\-]", "", utterance).strip().lower()
+    address_friendly = re.sub(r"\s+", " ", address_friendly)
+    send_email = _SEND_EMAIL.fullmatch(address_friendly)
+    if send_email:
+        return ToolCallRequest(
+            name="send_email",
+            arguments={
+                "recipient": send_email.group("recipient"),
+                "body": send_email.group("body"),
+            },
+        )
     # A request such as "What football scores happened yesterday?" is an
     # implicit web search. Keep this after the explicit news command so it
     # retains its dedicated news-search behaviour.

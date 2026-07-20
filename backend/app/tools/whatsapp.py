@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
 from app.planner.schemas import RiskLevel, ToolResult
-from app.tools._common import applescript_quote, run_command, run_osascript
+from app.tools import _contacts
 from app.tools.base import Tool
 
 # A phone-number-looking run inside the recipient text, e.g. the digits in
@@ -87,31 +87,10 @@ class WhatsAppSendTool(Tool):
         Returns (display name, phone number) on success, or a failed
         ToolResult explaining what the user should do instead.
         """
-        script = (
-            'tell application "Contacts"\n'
-            f"    set matched to (people whose name contains {applescript_quote(name)})\n"
-            '    set output to ""\n'
-            "    repeat with p in matched\n"
-            '        set phoneText to ""\n'
-            "        if (count of phones of p) > 0 then "
-            "set phoneText to value of item 1 of phones of p\n"
-            '        set output to output & (name of p) & "||" & phoneText & linefeed\n'
-            "    end repeat\n"
-            "    return output\n"
-            "end tell"
-        )
-        # Scripting Contacts fails with "Application isn't running" (-600)
-        # unless the app is up — launch it hidden in the background first
-        # (idempotent and cheap when it's already running).
-        await run_command(["/usr/bin/open", "-g", "-j", "-a", "Contacts"])
-        lookup = await run_osascript(script)
-        if not lookup.ok and "-600" in lookup.combined():
-            # Contacts was still starting up — give it a moment and retry once.
-            await asyncio.sleep(2)
-            lookup = await run_osascript(script)
-        if not lookup.ok:
-            error_text = lookup.combined()
-            if "-1743" in error_text or "Not authorized" in error_text:
+        try:
+            entries = await _contacts.lookup(name, "phone")
+        except _contacts.ContactsError as exc:
+            if exc.permission_denied:
                 return ToolResult.failure(
                     self.name,
                     "I'm not allowed to read your contacts yet. Approve the "
@@ -121,41 +100,24 @@ class WhatsAppSendTool(Tool):
                 )
             return ToolResult.failure(
                 self.name,
-                f"I couldn't search your contacts ({error_text.strip() or 'unknown error'}). "
+                f"I couldn't search your contacts ({exc}). "
                 "You can say the phone number instead.",
             )
-        entries: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for line in lookup.stdout.splitlines():
-            contact_name, sep, phone = line.partition("||")
-            if not sep or not contact_name.strip():
-                continue
-            entry = (contact_name.strip(), phone.strip())
-            # Synced address books often hold duplicate cards of the same
-            # person; identical (name, number) pairs are one contact.
-            key = (entry[0].lower(), re.sub(r"\D", "", entry[1]))
-            if key not in seen:
-                seen.add(key)
-                entries.append(entry)
         if not entries:
             return ToolResult.failure(
                 self.name,
                 f"I couldn't find {name} in your contacts. "
                 "Try the full name as saved, or say the phone number.",
             )
+        chosen = _contacts.pick(entries, name)
+        if chosen is not None:
+            return chosen
         with_phone = [entry for entry in entries if entry[1]]
         if not with_phone:
             return ToolResult.failure(
                 self.name,
                 f"{entries[0][0]} is in your contacts but has no phone number saved.",
             )
-        exact = [entry for entry in with_phone if entry[0].lower() == name.lower()]
-        if exact:
-            return exact[0]
-        if len({entry[0].lower() for entry in with_phone}) == 1:
-            # All matches are the same person (possibly several cards with
-            # different numbers) — not genuinely ambiguous, take the first.
-            return with_phone[0]
         candidates = ", ".join(entry[0] for entry in with_phone[:4])
         return ToolResult.failure(
             self.name,

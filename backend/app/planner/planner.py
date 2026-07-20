@@ -79,6 +79,16 @@ finder_list(path="~/Downloads")
   "open <name> playlist in Spotify" -> spotify_open_playlist(playlist=<name>)
   "send <message> on WhatsApp to <name or number>" -> \
 whatsapp_send(recipient=<contact name or number>, message=<message>)
+  "check my email" -> check_email
+  "send an email to <name> saying <text>" -> \
+send_email(recipient=<contact name or address>, body=<text>)
+
+When the user gives only a brief ("email X asking them to join Monday, make
+it professional"), YOU compose the full message body in the requested tone
+(a complete, well-formatted letter with greeting and sign-off) and pass it
+as send_email's `body`. Do not send a one-line fragment. The system shows
+the user the drafted email and asks them to confirm before it is sent, so
+always go ahead and call send_email once you have a recipient and a brief.
   "list connected Bluetooth devices" -> list_bluetooth_devices
   "play some Tamil songs" / "I want new Tamil songs" -> music_platform_prompt
   "recent news about <topic>" -> news_search(query=<topic>)
@@ -423,8 +433,13 @@ class Planner:
             execution.steps.pop()
 
         system_prompt = PLANNER_PROMPT
+        if self._settings.user_full_name:
+            system_prompt += (
+                f"\n\nThe user's name is {self._settings.user_full_name}. When you draft "
+                "an email, sign it with this name — never leave a '[Your Name]' placeholder."
+            )
         if memory_context:
-            system_prompt = f"{PLANNER_PROMPT}\n\n{memory_context}"
+            system_prompt = f"{system_prompt}\n\n{memory_context}"
         messages: list[Message] = [
             {"role": "system", "content": system_prompt},
             *history,
@@ -633,7 +648,8 @@ class Planner:
 
         parsed = tool.parse_args(call.arguments)
         risk = tool.assess_risk(parsed) if parsed is not None else tool.risk_level
-        action_text = f"{tool.name} {json.dumps(call.arguments, ensure_ascii=False)}"
+        preview = tool.confirmation_action(parsed) if parsed is not None else None
+        action_text = preview or f"{tool.name} {json.dumps(call.arguments, ensure_ascii=False)}"
         gate_decision = await self._gate.check(
             ConfirmationRequest(tool=tool.name, risk=risk, action=action_text),
             confirmer=confirmer,

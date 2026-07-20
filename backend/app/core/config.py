@@ -108,6 +108,15 @@ class Settings(BaseSettings):
     # Digits only, e.g. "91" for India, "1" for the US.
     whatsapp_default_country_code: str | None = None
 
+    # Address Jarvis sends email from. Must belong to an account signed in to
+    # the Apple Mail app; send_email refuses (rather than silently sending
+    # from another identity) when it doesn't. Unset = Mail's default account.
+    mail_from: str | None = None
+
+    # The user's name, used to sign drafted emails (otherwise the small model
+    # leaves a "[Your Name]" placeholder).
+    user_full_name: str | None = None
+
     log_level: str = "INFO"
 
     @field_validator("host")
