@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # leaves a "[Your Name]" placeholder).
     user_full_name: str | None = None
 
+    # City for the morning-briefing weather line (e.g. "Vellore"). Unset uses
+    # IP-based geolocation via wttr.in.
+    briefing_location: str | None = None
+    # Locale for briefing headlines (Google News), e.g. "en-IN"/"IN".
+    briefing_news_locale: str = "en-IN"
+    briefing_news_country: str = "IN"
+
     log_level: str = "INFO"
 
     @field_validator("host")

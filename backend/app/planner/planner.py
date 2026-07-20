@@ -80,6 +80,7 @@ finder_list(path="~/Downloads")
   "open <name> playlist in Spotify" -> spotify_open_playlist(playlist=<name>)
   "send <message> on WhatsApp to <name or number>" -> \
 whatsapp_send(recipient=<contact name or number>, message=<message>)
+  "good morning" / "brief me" / "what's my day like" -> morning_briefing
   "check my email" -> check_email
   "any mail from <name>" -> check_email(sender=<name>)
   "summarize my emails" -> summarize_inbox

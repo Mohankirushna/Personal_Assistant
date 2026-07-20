@@ -49,6 +49,7 @@ def test_discovery_finds_the_whole_suite() -> None:
         "music_platform_prompt", "news_search",
         "whatsapp_send",
         "check_email", "send_email", "summarize_inbox", "reply_email",
+        "morning_briefing",
         "calendar", "timer", "focus_mode",
         "list_bluetooth_devices",
         "window_arrange", "brightness",

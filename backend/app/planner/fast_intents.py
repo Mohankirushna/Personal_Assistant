@@ -88,6 +88,13 @@ _WHATSAPP_PATTERNS = [
 ]
 # Trailing phone number in a recipient phrase such as "mohan kirushna 9080209303".
 _WHATSAPP_PHONE_TAIL = re.compile(r"^(?:(?P<name>.+?) )?(?P<number>\d[\d ]{5,}\d)$")
+_MORNING_BRIEFING = re.compile(
+    r"^(?:good morning"
+    r"|(?:give me |run )?(?:my )?(?:morning |daily )?brief(?:ing)?(?: me)?"
+    r"|brief me"
+    r"|what(?:s| is| does)? my day(?: look)?(?: like)?"
+    r"|what(?:s| is)? on today)$"
+)
 _CHECK_EMAIL = re.compile(
     r"^(?:check|read|show me|open)(?: my)?(?: new)? (?:emails?|mail|inbox)$"
     r"|^(?:any|do i have(?: any)?) new (?:emails?|mail)$"
@@ -547,6 +554,8 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
                     "message": whatsapp_send.group("message"),
                 },
             )
+    if _MORNING_BRIEFING.fullmatch(normalized):
+        return ToolCallRequest(name="morning_briefing", arguments={})
     if _SUMMARIZE_INBOX.fullmatch(normalized) or _RECENT_MAILS.fullmatch(normalized):
         return ToolCallRequest(name="summarize_inbox", arguments={})
     check_from = _CHECK_EMAIL_FROM.fullmatch(address_friendly)

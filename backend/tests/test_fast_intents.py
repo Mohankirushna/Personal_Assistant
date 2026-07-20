@@ -381,6 +381,18 @@ def test_matches_recent_news_commands(utterance: str, arguments: dict[str, objec
 
 @pytest.mark.parametrize(
     "utterance",
+    ["good morning", "brief me", "morning briefing", "give me my morning brief",
+     "whats my day look like", "run my brief"],
+)
+def test_matches_morning_briefing(utterance: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "morning_briefing"
+    assert call.arguments == {}
+
+
+@pytest.mark.parametrize(
+    "utterance",
     # "check my email" = quick count/list; "read my mail" now summarizes.
     ["check my email", "check my inbox", "any new emails", "check email"],
 )
