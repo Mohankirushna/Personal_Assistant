@@ -433,6 +433,24 @@ def test_matches_check_email_from_sender(utterance: str, sender: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("utterance", "sender"),
+    [
+        # "recent"/"latest" must NOT trip the web-search route for mail queries.
+        ("what is the recent mail from noreply.cdcinfo@vitstudent.ac.in",
+         "noreply.cdcinfo@vitstudent.ac.in"),
+        ("read the latest email from alice", "alice"),
+        ("show me mail from the professor", "the professor"),
+        ("what are the emails from a.b@x.co", "a.b@x.co"),
+    ],
+)
+def test_read_mail_from_sender_beats_web_search(utterance: str, sender: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "summarize_inbox"
+    assert call.arguments == {"sender": sender}  # full email address preserved
+
+
+@pytest.mark.parametrize(
     ("utterance", "expected"),
     [
         ("reply to the latest email saying I will be there", {"body": "i will be there"}),

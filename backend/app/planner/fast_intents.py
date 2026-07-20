@@ -106,6 +106,15 @@ _CHECK_EMAIL_FROM = re.compile(
     r"^(?:any|do i have(?: any)?|is there(?: any)?|check(?: for)?) "
     r"(?:new |unread )?(?:emails?|mail) from (?P<sender>.+)$"
 )
+# "what is the recent mail from X", "read the latest email from X",
+# "show me mail from X" — read/summarize a sender's mail (regardless of read
+# status). Must be checked before web-search routing, since "recent"/"latest"
+# would otherwise trip the live-info pattern and google the question.
+_READ_MAIL_FROM = re.compile(
+    r"^(?:what(?:'s| is| are)?|show me|read|tell me|get)\s+"
+    r"(?:the |my )?(?:recent|latest|last|newest|new)?\s*"
+    r"(?:e-?mails?|messages?|mail)\s+(?:from|by)\s+(?P<sender>.+)$"
+)
 _REPLY_EMAIL = re.compile(
     r"^reply(?: to)?(?: the)?(?: latest| last| newest)?(?: email| mail)?"
     r"(?: from (?P<sender>.+?))? (?:saying|that says|with) (?P<body>.+)$"
@@ -336,6 +345,11 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
     normalized = re.sub(r"\s+", " ", normalized)
     if not normalized:
         return None
+    # A gentler normalization that keeps @ . - so email addresses survive
+    # ("from a.b@x.co" stays intact instead of becoming "abxco"). Used by the
+    # email fast-paths that capture a sender or recipient.
+    address_friendly = re.sub(r"[^\w\s@.\-]", "", utterance).strip().lower()
+    address_friendly = re.sub(r"\s+", " ", address_friendly)
     system_power = _SYSTEM_POWER.fullmatch(normalized)
     if system_power:
         raw_action = system_power.group("action")
@@ -477,17 +491,18 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
             )
     if _SUMMARIZE_INBOX.fullmatch(normalized):
         return ToolCallRequest(name="summarize_inbox", arguments={})
-    check_from = _CHECK_EMAIL_FROM.fullmatch(normalized)
+    check_from = _CHECK_EMAIL_FROM.fullmatch(address_friendly)
     if check_from:
         return ToolCallRequest(
             name="check_email", arguments={"sender": check_from.group("sender").strip()}
         )
+    read_from = _READ_MAIL_FROM.fullmatch(address_friendly)
+    if read_from:
+        return ToolCallRequest(
+            name="summarize_inbox", arguments={"sender": read_from.group("sender").strip()}
+        )
     if _CHECK_EMAIL.fullmatch(normalized):
         return ToolCallRequest(name="check_email", arguments={})
-    # Email needs a gentler normalization: the standard one strips @ and .
-    # which would mangle a typed address like a@b.co into "abco".
-    address_friendly = re.sub(r"[^\w\s@.\-]", "", utterance).strip().lower()
-    address_friendly = re.sub(r"\s+", " ", address_friendly)
     send_email = _SEND_EMAIL.fullmatch(address_friendly)
     if send_email:
         return ToolCallRequest(
