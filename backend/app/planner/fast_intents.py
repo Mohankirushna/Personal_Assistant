@@ -115,6 +115,44 @@ _READ_MAIL_FROM = re.compile(
     r"(?:the |my )?(?:recent|latest|last|newest|new)?\s*"
     r"(?:e-?mails?|messages?|mail)\s+(?:from|by)\s+(?P<sender>.+)$"
 )
+# Catch-all so any free-form question about email from someone reaches the
+# mail tool instead of web search, however it's phrased ("what about mails
+# from github, was there a recent one?"). Requires an email keyword AND a
+# "from <sender>" clause; the sender is the address or the first few
+# non-filler words after "from".
+_MAIL_KEYWORD = re.compile(r"\b(?:e-?mails?|mails?|inbox)\b")
+_MAIL_SENDER_AFTER_FROM = re.compile(r"\bfrom\s+(?P<rest>.+)$")
+_SENDER_STOPWORDS = frozenset({
+    "was", "is", "are", "were", "there", "any", "recent", "recently", "one",
+    "ones", "the", "a", "an", "new", "latest", "last", "newest", "today",
+    "please", "me", "i", "yet", "so", "far", "and", "or", "about", "regarding",
+    "saying", "that", "with", "in", "my", "unread",
+})
+
+
+def _extract_mail_sender(text: str) -> str | None:
+    if not _MAIL_KEYWORD.search(text):
+        return None
+    match = _MAIL_SENDER_AFTER_FROM.search(text)
+    if not match:
+        return None
+    words = match.group("rest").split()
+    # A leading article introduces the sender ("from the professor") — skip it
+    # rather than treat it as a terminator.
+    while words and words[0] in {"the", "a", "an", "my"}:
+        words = words[1:]
+    if not words:
+        return None
+    if "@" in words[0]:  # a full email address stands alone
+        return words[0]
+    picked: list[str] = []
+    for word in words:
+        if word in _SENDER_STOPWORDS:
+            break
+        picked.append(word)
+        if len(picked) >= 3:
+            break
+    return " ".join(picked) or None
 _REPLY_EMAIL = re.compile(
     r"^reply(?: to)?(?: the)?(?: latest| last| newest)?(?: email| mail)?"
     r"(?: from (?P<sender>.+?))? (?:saying|that says|with) (?P<body>.+)$"
@@ -518,6 +556,12 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
         if reply_email.group("sender"):
             reply_args["sender"] = reply_email.group("sender").strip()
         return ToolCallRequest(name="reply_email", arguments=reply_args)
+    # Broad catch-all: any remaining email-about-a-sender question routes to
+    # the mail tool rather than web search, whatever the phrasing. Placed
+    # after the specific send/reply intents so those win first.
+    mail_sender = _extract_mail_sender(address_friendly)
+    if mail_sender:
+        return ToolCallRequest(name="summarize_inbox", arguments={"sender": mail_sender})
     # A request such as "What football scores happened yesterday?" is an
     # implicit web search. Keep this after the explicit news command so it
     # retains its dedicated news-search behaviour.

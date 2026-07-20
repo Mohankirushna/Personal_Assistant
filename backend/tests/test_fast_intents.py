@@ -451,6 +451,31 @@ def test_read_mail_from_sender_beats_web_search(utterance: str, sender: str) -> 
 
 
 @pytest.mark.parametrize(
+    ("utterance", "sender"),
+    [
+        # Free-form phrasings the strict patterns miss must still reach mail,
+        # not web search.
+        ("what about mails from github was there any recent one", "github"),
+        ("did i get an email from the professor", "professor"),
+        ("anything from cdc in my inbox lately", "cdc"),
+        ("were there emails from noreply.cdcinfo@vitstudent.ac.in",
+         "noreply.cdcinfo@vitstudent.ac.in"),
+    ],
+)
+def test_freeform_email_questions_reach_mail_not_web(utterance: str, sender: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "summarize_inbox"
+    assert call.arguments == {"sender": sender}
+
+
+def test_broad_mail_catchall_does_not_hijack_send_or_reply() -> None:
+    # "mail from X" appears, but these are send/reply intents and must win.
+    send = match_fast_intent("reply to the mail from alice saying got it")
+    assert send is not None and send.name == "reply_email"
+
+
+@pytest.mark.parametrize(
     ("utterance", "expected"),
     [
         ("reply to the latest email saying I will be there", {"body": "i will be there"}),
