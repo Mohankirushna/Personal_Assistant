@@ -135,8 +135,13 @@ _BROWSER_SEARCH = re.compile(
 # with an unrelated capability prompt. Keep this deliberately narrow so
 # ordinary conversation (for example, "how are you today?") still reaches the
 # planner normally.
+# The user's own calendar/schedule is local state, never a web query — even
+# with a typo ("my calender today" was once web-searched to a date-picker
+# site because it started with "whats" and contained "today").
 _LIVE_INFO_QUESTION = re.compile(
-    r"^(?!(?:how are you|how r u)\b)(?:what|whats|who|when|where|which|how|"
+    r"^(?!(?:how are you|how r u)\b)"
+    r"(?!.*\bmy (?:calendar|calender|calandar|schedule|meetings?|events)\b)"
+    r"(?:what|whats|who|when|where|which|how|"
     r"can|could|do|does|is|are|"
     r"tell|show|give)\b.*\b(?:today|yesterday|tomorrow|latest|recent|"
     r"current|live|now|news|weather|score|scores|result|results|price|prices|"
@@ -247,7 +252,8 @@ _FOCUS_MODE_TOGGLE = re.compile(
 # to the live-info pattern (starts with "whats", contains "today") and gets
 # web-searched — observed live.
 _CALENDAR = re.compile(
-    r"^(?:show|check|what'?s|list|view|see) (?:my |the )?(?:calendar|events|meetings)"
+    r"^(?:show|check|what'?s|list|view|see|tell me) (?:my |the )?"
+    r"(?:calendar|calender|calandar|schedule|events|meetings)"
     r"(?: (?:for )?(?P<when>today|tomorrow|this week))?$"
     r"|^(?:what'?s|show|check) (?:my |the )?next meeting$"
 )

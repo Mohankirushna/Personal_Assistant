@@ -528,6 +528,11 @@ def test_focus_mode_commands_use_focus_mode_tool(
         ("whats my calendar today", "today"),
         ("check my calendar tomorrow", "tomorrow"),
         ("what's my next meeting", "today"),
+        # Typed with a typo in the chat window — was web-searched to a
+        # date-picker site. Misspellings must still reach the local tool.
+        ("what's my calender today", "today"),
+        ("whats my schedule today", "today"),
+        ("show my schedule", "today"),
     ],
 )
 def test_calendar_commands_use_calendar_tool(utterance: str, day: str) -> None:
