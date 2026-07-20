@@ -60,25 +60,31 @@ def _permission_or_error(tool_name: str, error_text: str, action: str) -> ToolRe
 
 
 async def _scan_inbox(
-    sender: str | None, include_body: bool, limit: int, unread_only: bool = True
+    sender: str | None, include_body: bool, limit: int, unread_only: bool = True,
+    keyword: str | None = None,
 ) -> tuple[int, list[dict[str, str]]] | CommandOutput:
     """Return (unread total, newest matching messages) or the failed
     CommandOutput so the caller can classify the error. `unread_only` scans
     only unread mail (a fresh-inbox check); set it False to find the latest
-    from a sender regardless of whether it's been read. Bodies are optional
-    because reading them is slower and only needed for summarizing."""
+    from a sender regardless of read status. `keyword` searches the whole
+    inbox for mail whose sender OR subject contains it (a topic search).
+    Bodies are optional because reading them is slower."""
     body_clause = (
         "try\n            set bodyText to content of m\n        end try" if include_body else ""
     )
-    if sender:
-        # Targeted search: let Mail filter the WHOLE inbox by sender (not just
-        # the newest _SCAN_LIMIT), so older mail from that person is found too.
-        read_filter = " and read status is false" if unread_only else ""
+    if keyword or sender:
+        # Targeted search over the WHOLE inbox (not just the newest _SCAN_LIMIT).
+        if keyword:
+            q = applescript_quote(keyword)
+            where = f"(subject contains {q} or sender contains {q})"
+        else:
+            assert sender is not None  # entered this branch, so sender is set
+            read_filter = " and read status is false" if unread_only else ""
+            where = f"sender contains {applescript_quote(sender)}{read_filter}"
         script = f'''tell application "Mail"
     with timeout of 90 seconds
         set unreadTotal to unread count of inbox
-        set matchList to (messages of inbox whose sender contains ¬
-            {applescript_quote(sender)}{read_filter})
+        set matchList to (messages of inbox whose {where})
         set output to ""
         set found to 0
         repeat with m in matchList
@@ -238,16 +244,22 @@ class CheckEmailTool(Tool):
 class SummarizeInboxArgs(BaseModel):
     sender: str | None = Field(
         default=None,
-        description="Only summarize unread mail whose sender contains this name or address.",
+        description="Only summarize mail whose sender contains this name or address.",
+    )
+    query: str | None = Field(
+        default=None,
+        description="Topic keyword to search for; matches mail whose subject or sender "
+        "contains it ('any mail about supabase' -> query='supabase').",
     )
 
 
 class SummarizeInboxTool(Tool):
     name: ClassVar[str] = "summarize_inbox"
     description: ClassVar[str] = (
-        "Read the newest unread emails (sender, subject, and body) and return them so you "
-        "can summarize the user's inbox in your own words. Use for 'summarize my emails' / "
-        "'what are my unread emails about'. Optionally filter by sender."
+        "Read matching emails (sender, subject, and body) and return them so you can "
+        "summarize the user's inbox in your own words. Use for 'summarize my emails', "
+        "'mail from <person>' (sender=), or 'mail about <topic>' (query=). With neither, "
+        "summarizes the newest unread mail."
     )
     args_model: ClassVar[type[BaseModel]] = SummarizeInboxArgs
     risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
@@ -255,32 +267,34 @@ class SummarizeInboxTool(Tool):
     _SUMMARY_LIMIT = 5
 
     async def run(self, args: SummarizeInboxArgs) -> ToolResult:  # type: ignore[override]
-        # No sender -> summarize only fresh (unread) mail. Named sender ->
-        # find the latest from them regardless of read status, since "what
-        # did X email me" is about that person's mail, read or not.
+        # query -> topic search (sender or subject). sender -> that person's
+        # mail, read or not. Neither -> the newest fresh (unread) mail.
         scanned = await _scan_inbox(
             args.sender, include_body=True, limit=self._SUMMARY_LIMIT,
-            unread_only=args.sender is None,
+            unread_only=args.sender is None and args.query is None,
+            keyword=args.query,
         )
         if isinstance(scanned, CommandOutput):
             return _permission_or_error(self.name, scanned.combined(), "read")
         unread, messages = scanned
         if not messages:
-            summary = (
-                f"No email found from {args.sender}."
-                if args.sender
-                else "No unread email found."
-            )
+            if args.query:
+                summary = f"No email found about {args.query}."
+            elif args.sender:
+                summary = f"No email found from {args.sender}."
+            else:
+                summary = "No unread email found."
             return ToolResult(tool=self.name, ok=True, summary=summary, data={"messages": []})
         blocks = [
             f"From {m['from']}\nSubject: {m['subject']}\n{m['body'] or '(no preview)'}"
             for m in messages
         ]
-        header = (
-            f"Recent emails from {args.sender} to summarize:"
-            if args.sender
-            else "Unread emails to summarize:"
-        )
+        if args.query:
+            header = f"Emails about {args.query} to summarize:"
+        elif args.sender:
+            header = f"Recent emails from {args.sender} to summarize:"
+        else:
+            header = "Unread emails to summarize:"
         return ToolResult(
             tool=self.name, ok=True,
             summary=f"{header}\n\n" + "\n\n---\n\n".join(blocks),

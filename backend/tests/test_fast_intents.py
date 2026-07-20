@@ -476,6 +476,21 @@ def test_broad_mail_catchall_does_not_hijack_send_or_reply() -> None:
 
 
 @pytest.mark.parametrize(
+    ("utterance", "query"),
+    [
+        ("was there any mail about supabase", "supabase"),
+        ("any mail about the placement drive", "placement drive"),
+        ("did i get an email regarding my results", "results"),  # leading "my" stripped
+    ],
+)
+def test_mail_about_topic_routes_to_keyword_search(utterance: str, query: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "summarize_inbox"
+    assert call.arguments == {"query": query}
+
+
+@pytest.mark.parametrize(
     ("utterance", "expected"),
     [
         ("reply to the latest email saying I will be there", {"body": "i will be there"}),

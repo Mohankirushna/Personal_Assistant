@@ -116,6 +116,38 @@ async def test_summarize_inbox_returns_bodies_for_the_model(
     assert "Are you free at noon?" in result.summary
 
 
+async def test_summarize_inbox_topic_search_matches_subject_or_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'mail about supabase' is a keyword search over subject+sender, over the
+    whole inbox regardless of read status."""
+    from app.tools.mail import SummarizeInboxTool
+
+    scripts = _mock_mail(
+        monkeypatch,
+        _scan_output(0, [
+            ("ant.wilson@supabase.com", "Your Supabase project paused", "Free tier paused."),
+        ]),
+    )
+    result = await SummarizeInboxTool().execute({"query": "supabase"})
+    assert result.ok, result.summary
+    assert "about supabase" in result.summary.lower()
+    assert "Free tier paused." in result.summary
+    # The scan used a subject-OR-sender keyword filter, not an unread scan.
+    assert "subject contains" in scripts[0] and "sender contains" in scripts[0]
+
+
+async def test_summarize_inbox_topic_search_none_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.mail import SummarizeInboxTool
+
+    _mock_mail(monkeypatch, _scan_output(0, []))
+    result = await SummarizeInboxTool().execute({"query": "nonexistent"})
+    assert result.ok, result.summary
+    assert result.summary == "No email found about nonexistent."
+
+
 async def test_reply_email_sends_re_subject_to_original_sender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
