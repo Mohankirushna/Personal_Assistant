@@ -62,8 +62,10 @@ async def test_briefing_combines_all_sections(monkeypatch: pytest.MonkeyPatch) -
         unread=(3, [{"from": "Alice <a@x.com>", "subject": "", "body": ""}]),
         weather="Sunny +31°C",
         rss="<channel><title>Google News</title>"
-        "<item><title>Headline one - Paper</title></item>"
-        "<item><title>Headline two - TV</title></item></channel>",
+        "<item><title>Headline one - Paper</title>"
+        "<pubDate>Tue, 21 Jul 2026 05:00:00 GMT</pubDate></item>"
+        "<item><title>Headline two - TV</title>"
+        "<pubDate>Tue, 21 Jul 2026 04:00:00 GMT</pubDate></item></channel>",
     )
     result = await _tool().execute({})
     assert result.ok, result.summary
@@ -87,6 +89,133 @@ async def test_briefing_drops_failed_sections_gracefully(
     assert "No unread email." in s
     assert "weather" not in s.lower()  # HTML page rejected, line dropped
     assert "calendar" not in s.lower()  # denied, line dropped
+
+
+async def test_headlines_sorted_by_actual_publish_time_not_feed_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Google's 'top stories' order blends relevance with recency; the
+    briefing must report the most RECENTLY published headlines, so an older
+    item listed first in the feed must not outrank a newer one listed later."""
+    _mock_all(
+        monkeypatch,
+        events=[],
+        unread=(0, []),
+        weather="<html>",
+        rss="<channel><title>Google News</title>"
+        "<item><title>Older, listed first - Paper</title>"
+        "<pubDate>Mon, 20 Jul 2026 10:00:00 GMT</pubDate></item>"
+        "<item><title>Newest, listed second - Paper</title>"
+        "<pubDate>Tue, 21 Jul 2026 09:00:00 GMT</pubDate></item>"
+        "<item><title>Middle, listed third - Paper</title>"
+        "<pubDate>Tue, 21 Jul 2026 03:00:00 GMT</pubDate></item></channel>",
+    )
+    result = await _tool().execute({})
+    part = result.summary.split("Top headlines: ")[1]
+    # Newest first, regardless of feed order.
+    assert part.index("Newest, listed second") < part.index("Middle, listed third")
+    assert part.index("Middle, listed third") < part.index("Older, listed first")
+
+
+async def test_headlines_skip_items_with_unparseable_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_all(
+        monkeypatch,
+        events=[],
+        unread=(0, []),
+        weather="<html>",
+        rss="<channel>"
+        "<item><title>No date - Paper</title><pubDate>not a date</pubDate></item>"
+        "<item><title>Good headline - Paper</title>"
+        "<pubDate>Tue, 21 Jul 2026 05:00:00 GMT</pubDate></item></channel>",
+    )
+    result = await _tool().execute({})
+    assert "Good headline" in result.summary
+    assert "No date" not in result.summary
+
+
+async def test_headline_internal_semicolon_does_not_read_as_two_headlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real bug: Google News sometimes titles a single roundup story with its
+    own '; ' inside it ("...adjourned; Kharge raises..."), which collided
+    with the '; ' used to join separate headlines and made it sound like two
+    stories instead of one."""
+    _mock_all(
+        monkeypatch,
+        events=[],
+        unread=(0, []),
+        weather="<html>",
+        rss="<channel><item><title>"
+        "Parliament adjourned; Kharge raises CJP protest - The Hindu"
+        "</title><pubDate>Tue, 21 Jul 2026 05:00:00 GMT</pubDate></item></channel>",
+    )
+    result = await _tool().execute({})
+    assert "Parliament adjourned, Kharge raises CJP protest" in result.summary
+
+
+async def test_weather_uses_configured_location_without_calling_corelocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit JARVIS_BRIEFING_LOCATION must win outright — Location
+    Services shouldn't even be queried."""
+    _mock_all(monkeypatch, events=[], unread=(0, []), weather="Sunny +31°C", rss="")
+
+    async def explode() -> str | None:
+        raise AssertionError("current_city() must not be called when a location is configured")
+
+    monkeypatch.setattr(briefing_module._location, "current_city", explode)
+    result = await _tool().execute({})
+    assert "weather in Vellore" in result.summary
+
+
+async def test_weather_auto_detects_location_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_all(monkeypatch, events=[], unread=(0, []), weather="Sunny +31°C", rss="")
+
+    async def fake_current_city() -> str | None:
+        return "Chennai"
+
+    monkeypatch.setattr(briefing_module._location, "current_city", fake_current_city)
+    tool = MorningBriefingTool(Settings(briefing_location=None))
+    result = await tool.execute({})
+    assert "weather in Chennai" in result.summary
+
+
+async def test_weather_falls_back_when_location_detection_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Denied permission / no fix / unsupported platform must degrade to the
+    pre-existing behaviour (IP geolocation via a blank wttr.in query), not
+    fail the whole briefing."""
+    calls: list[str] = []
+
+    async def fake_run_command(argv, cwd=None, timeout=30.0):  # type: ignore[no-untyped-def]
+        calls.append(argv[-1])
+        if "wttr.in" in argv[-1]:
+            return CommandOutput(0, "Sunny +31°C", "")
+        return CommandOutput(0, "", "")
+
+    async def fake_calendar_run(self, args):  # type: ignore[no-untyped-def]
+        return ToolResult.failure("calendar", "denied")
+
+    async def fake_scan(sender, include_body, limit, unread_only=True, keyword=None):  # type: ignore[no-untyped-def]
+        return (0, [])
+
+    async def fake_current_city() -> str | None:
+        return None
+
+    monkeypatch.setattr(briefing_module.CalendarTool, "run", fake_calendar_run)
+    monkeypatch.setattr(briefing_module.mail_module, "_scan_inbox", fake_scan)
+    monkeypatch.setattr(briefing_module, "run_command", fake_run_command)
+    monkeypatch.setattr(briefing_module._location, "current_city", fake_current_city)
+
+    tool = MorningBriefingTool(Settings(briefing_location=None))
+    result = await tool.execute({})
+    assert "weather is Sunny 31°C" in result.summary  # no "in <city>" clause
+    assert calls[0] == "https://wttr.in/?format=%C+%t&m"  # blank location, as before
 
 
 async def test_briefing_dedupes_repeated_email_senders(

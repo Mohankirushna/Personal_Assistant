@@ -13,6 +13,7 @@ import asyncio
 import html
 import re
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import ClassVar
 from urllib.parse import quote
 
@@ -20,10 +21,16 @@ from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
 from app.planner.schemas import RiskLevel, ToolResult
+from app.tools import _location
 from app.tools import mail as mail_module
 from app.tools._common import run_command
 from app.tools.base import Tool
 from app.tools.calendar import CalendarArgs, CalendarTool
+
+_HEADLINE_ITEM = re.compile(
+    r"<item>.*?<title>(?P<title>.*?)</title>.*?<pubDate>(?P<pubdate>.*?)</pubDate>",
+    re.DOTALL,
+)
 
 
 def _greeting(now: datetime) -> str:
@@ -115,7 +122,12 @@ class MorningBriefingTool(Tool):
         return f"You have {unread} unread {noun}{tail}."
 
     async def _weather_line(self) -> str:
+        # An explicit setting always wins. Otherwise, try the device's real
+        # current location (accurate WiFi-positioning) before falling back to
+        # wttr.in's own IP-based guess, which is often wrong by tens of km.
         location = (self._settings.briefing_location or "").strip()
+        if not location:
+            location = await _location.current_city() or ""
         url = "https://wttr.in/" + quote(location, safe="") + "?format=%C+%t&m"
         # No browser UA here: wttr.in returns its plain-text one-line format
         # only to curl-like clients; a browser UA gets the full HTML page.
@@ -138,13 +150,25 @@ class MorningBriefingTool(Tool):
         output = await run_command(["/usr/bin/curl", "-s", "--max-time", "8", url])
         if not output.ok or not output.stdout.strip():
             return ""
-        # Only <item> titles are headlines; the <channel> title is the feed
-        # name ("Google News") and must not leak in.
-        items = re.findall(r"<item>.*?<title>(.*?)</title>", output.stdout, flags=re.DOTALL)
-        headlines = [self._clean_headline(t) for t in items[:3]]
-        headlines = [h for h in headlines if h]
-        if not headlines:
+        # Google's "top stories" feed order blends relevance with recency;
+        # sort by each item's actual pubDate so "top headlines" means the
+        # most recently published, not whatever Google ranked first. Only
+        # <item> entries are headlines — the <channel> title is the feed name
+        # ("Google News") and must not leak in.
+        dated: list[tuple[datetime, str]] = []
+        for match in _HEADLINE_ITEM.finditer(output.stdout):
+            headline = self._clean_headline(match.group("title"))
+            if not headline:
+                continue
+            try:
+                published = parsedate_to_datetime(match.group("pubdate"))
+            except (TypeError, ValueError):
+                continue
+            dated.append((published, headline))
+        if not dated:
             return ""
+        dated.sort(key=lambda pair: pair[0], reverse=True)
+        headlines = [headline for _, headline in dated[:3]]
         return "Top headlines: " + "; ".join(headlines) + "."
 
     @staticmethod
@@ -152,4 +176,8 @@ class MorningBriefingTool(Tool):
         text = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", raw, flags=re.DOTALL)
         text = html.unescape(text).strip()
         # Google News appends " - Publisher"; keep the headline itself.
-        return text.rsplit(" - ", 1)[0].strip()
+        text = text.rsplit(" - ", 1)[0].strip()
+        # Some Google News titles are themselves a "; "-joined roundup of two
+        # stories. Left alone, that collides with the "; " used to join
+        # separate headlines together below, making one item sound like two.
+        return text.replace("; ", ", ")

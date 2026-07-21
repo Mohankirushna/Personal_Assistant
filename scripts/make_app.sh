@@ -52,6 +52,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>Jarvis reads your calendar to answer questions about today's events and meetings.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>Jarvis reads your calendar to answer questions about today's events and meetings.</string>
+    <!-- Morning briefing weather (CoreLocation): without this key macOS
+         auto-denies the location request without ever showing a prompt. -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Jarvis uses your current location to give an accurate weather report in your morning briefing.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Jarvis uses your current location to give an accurate weather report in your morning briefing.</string>
 </dict>
 </plist>
 PLIST
