@@ -12,8 +12,10 @@ before pushing (no manual step needed).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -442,7 +444,19 @@ class GitHubDeleteRepoTool(Tool):
         self._settings = settings or get_settings()
 
     def confirmation_action(self, args: DeleteRepoArgs) -> str | None:
-        """Show what will be deleted before proceeding."""
+        """Open the repo in the browser so the user can verify it's the right
+        one, then show what will be deleted. This runs before the Allow/Deny
+        dialog, using whatever the registry already has cached — it can't
+        await a fresh scan or the LLM fallback here, so a cold cache just
+        skips the browser preview and falls back to the plain confirmation."""
+        project = self._registry.find_cached(args.project)
+        if project is not None and project.remote_url:
+            with contextlib.suppress(Exception):
+                subprocess.Popen(["open", project.remote_url])
+            return (
+                f"Opened {project.name} on GitHub for you to check: {project.remote_url}\n"
+                "Delete this repository? This cannot be undone."
+            )
         return f"Delete the GitHub repository for '{args.project}'? This cannot be undone."
 
     async def run(self, args: DeleteRepoArgs) -> ToolResult:  # type: ignore[override]

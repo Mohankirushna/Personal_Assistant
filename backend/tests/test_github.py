@@ -393,3 +393,57 @@ async def test_delete_repo_confirmation_preview(tmp_path: Path) -> None:
     assert "delete" in preview.lower()
     assert "fitness" in preview.lower()
     assert "cannot be undone" in preview.lower()
+
+
+async def test_delete_repo_confirmation_opens_browser_when_cache_warm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the registry has already been scanned (the common case — the user
+    typically located/pushed the project earlier), confirmation_action must
+    open the repo in the browser so the user can verify it before approving."""
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    await registry.refresh()  # warm the cache, as a prior tool call would
+    settings = Settings(
+        _env_file=None, projects_dir=tmp_path, github_token="fake_token"
+    )
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    opened: list[list[str]] = []
+    monkeypatch.setattr(
+        github_module.subprocess, "Popen", lambda argv: opened.append(argv)
+    )
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    preview = tool.confirmation_action(DeleteRepoArgs(project="fitness"))
+
+    assert opened == [["open", "https://github.com/mohan/fitness-app"]]
+    assert preview is not None
+    assert "https://github.com/mohan/fitness-app" in preview
+    assert "cannot be undone" in preview.lower()
+
+
+async def test_delete_repo_confirmation_no_browser_when_cache_cold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before any scan has happened, find_cached can't know about the repo —
+    confirmation must degrade to the plain text, never raise or hang."""
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)  # never refreshed
+    settings = Settings(
+        _env_file=None, projects_dir=tmp_path, github_token="fake_token"
+    )
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    opened: list[list[str]] = []
+    monkeypatch.setattr(
+        github_module.subprocess, "Popen", lambda argv: opened.append(argv)
+    )
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    preview = tool.confirmation_action(DeleteRepoArgs(project="fitness"))
+
+    assert opened == []
+    assert preview == "Delete the GitHub repository for 'fitness'? This cannot be undone."

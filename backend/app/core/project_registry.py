@@ -112,6 +112,14 @@ class ProjectRegistry:
         ties (the user more often asks about ones they've pushed)."""
         if not self._scanned:
             await self.refresh()
+        return self.find_cached(query)
+
+    def find_cached(self, query: str) -> ProjectInfo | None:
+        """Same scoring as `find`, but synchronous — only searches whatever is
+        already cached (no scan triggered). Returns None before the first
+        scan. Exists for callers that can't await, e.g. a Tool's
+        `confirmation_action`, which needs to build its preview text (and any
+        side effect like opening a browser tab) before the async gate runs."""
         query_lower = query.lower()
         best: ProjectInfo | None = None
         best_score = 0.0
