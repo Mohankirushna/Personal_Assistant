@@ -744,6 +744,14 @@ def test_calendar_commands_use_calendar_tool(utterance: str, day: str) -> None:
         ("remove fitness from github", "fitness"),
         ("delete the github repo for fitness", "fitness"),
         ("delete repository for the fitness project", "fitness"),
+        # "...repo in github" / "...project repo in github" tails — these did
+        # NOT match before, so they fell to the LLM, which skipped the tool on
+        # a repeated delete (saw a prior "Deleted" in history) and neither
+        # asked nor deleted. They must route deterministically to the tool.
+        ("delete fitness repo in github", "fitness"),
+        ("delete the fitness project repo in github", "fitness"),
+        ("delete fitness in github", "fitness"),
+        ("delete fitness app repo in github", "fitness app"),
     ],
 )
 def test_delete_repo_commands_route_to_tool(utterance: str, project: str) -> None:

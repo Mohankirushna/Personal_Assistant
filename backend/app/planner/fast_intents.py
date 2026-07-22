@@ -432,16 +432,25 @@ def _match_locate_project(normalized: str) -> str | None:
     return None
 
 
-# "delete the X repo", "remove X from github" — a destructive action that requires
-# the planner to route to a tool with explicit confirmation, never a chat answer.
+# "delete the X repo", "remove X from github", "delete fitness app repo in
+# github", "delete the fitness project repo in github" — a destructive action
+# that MUST route deterministically to the tool (with confirmation), never to
+# the LLM: on a repeat, the LLM sees a prior "Deleted" in history and fakes a
+# reply without calling the tool (so it neither asks nor deletes). These
+# patterns therefore need to be generous about trailing "repo"/"project" and
+# the "in/on/from github" tail.
 _DELETE_REPO_PATTERNS = [
+    # "delete [the] [github] repo[sitory] for [the] X [in/on/from github]"
     re.compile(
         r"^(?:delete|remove)\s+(?:the\s+)?(?:github\s+)?repo(?:sitory)?\s+for\s+"
-        r"(?:the\s+)?(?P<name>.+?)(?:\s+(?:on|from)\s+github)?$"
+        r"(?:the\s+)?(?P<name>.+?)(?:\s+(?:in|on|from)\s+github)?$"
     ),
+    # "delete [the] X [project] [repo[sitory]] in/on/from github"
     re.compile(
-        r"^(?:delete|remove)\s+(?P<name>.+?)\s+(?:from|on)\s+github$"
+        r"^(?:delete|remove)\s+(?:the\s+)?(?P<name>.+?)"
+        r"(?:\s+repo(?:sitory)?)?\s+(?:in|on|from)\s+github$"
     ),
+    # "delete [the] X [project] repo[sitory]"  (no github tail)
     re.compile(
         r"^(?:delete|remove)\s+(?:the\s+)?(?P<name>.+?)\s+repo(?:sitory)?$"
     ),
