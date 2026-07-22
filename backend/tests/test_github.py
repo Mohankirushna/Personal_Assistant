@@ -290,6 +290,49 @@ async def test_push_no_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "No changes" in result.summary
 
 
+async def test_push_recreates_a_deleted_remote_even_with_a_clean_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original bug: a project with a clean working tree but a remote
+    that's been deleted on GitHub must NOT short-circuit as 'no changes' —
+    it needs the repo recreated and its existing local history pushed."""
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    settings = Settings(_env_file=None, projects_dir=tmp_path, github_token="fake_token")
+    registry = ProjectRegistry(tmp_path)
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    async def fake_exists(remote_url: str, token: str | None) -> bool | None:
+        return False  # simulates the repo having been deleted on GitHub
+
+    monkeypatch.setattr(github_module, "_repo_exists_on_github", fake_exists)
+
+    created_repos: list[str] = []
+
+    async def mock_run(cmd, cwd=None, timeout=30.0):
+        if cmd[0] == "curl":
+            created_repos.append("called")
+            return CommandOutput(0, '{"id": 1, "name": "fitness-app"}', "")
+        if "config" in cmd and "remote.origin.url" in cmd:
+            return CommandOutput(0, "https://github.com/mohan/fitness-app.git\n", "")
+        if "status" in cmd:
+            return CommandOutput(0, "", "")  # clean tree
+        if "rev-parse" in cmd:
+            return CommandOutput(0, "main\n", "")
+        if cmd[0] == "open":
+            return CommandOutput(0, "", "")
+        return CommandOutput(0, "", "")  # add/commit/pull/push all succeed
+
+    monkeypatch.setattr(github_module, "run_command", mock_run)
+
+    tool = GitHubPushTool(registry, fake, manager, settings)
+    result = await tool.run(PushChangesArgs(project="fitness"))
+
+    assert result.ok, result.summary
+    assert created_repos == ["called"]  # the repo WAS recreated
+    assert "no changes" not in result.summary.lower()  # never short-circuited
+
+
 async def test_push_executes_full_sequence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

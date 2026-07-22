@@ -354,11 +354,48 @@ class GitHubPushTool(Tool):
             # commit") and the repo would sit empty forever.
             if not any(cwd.iterdir()):
                 (cwd / "README.md").write_text(f"# {repo_name}\n")
+            recreated = False
+        else:
+            # A local .git with a saved remote doesn't guarantee that remote
+            # still exists on GitHub — it could have been deleted there. A
+            # clean working tree in that case must NOT short-circuit as "no
+            # changes": there's still local history that needs a live repo
+            # to land in.
+            recreated = False
+            remote_check = await run_command(
+                ["git", "config", "--get", "remote.origin.url"], cwd=cwd
+            )
+            if remote_check.ok and remote_check.stdout.strip():
+                existing_remote = normalize_remote_url(remote_check.stdout)
+                exists = await _repo_exists_on_github(
+                    existing_remote, self._settings.github_token
+                )
+                if exists is False:
+                    derived_name = existing_remote.rstrip("/").rsplit("/", 1)[-1]
+                    repo_name = (args.repo_name or derived_name).lower()
+                    username = (
+                        args.github_username or self._settings.github_username or "Mohankirushna"
+                    ).strip()
+                    if not self._settings.github_token:
+                        return ToolResult.failure(
+                            self.name,
+                            f"'{repo_name}' was deleted from GitHub and needs to be recreated, "
+                            "but no GitHub API token is configured.",
+                        )
+                    repo_url = await _create_repo_on_github(
+                        repo_name, username, self._settings.github_token
+                    )
+                    if repo_url is None:
+                        return ToolResult.failure(
+                            self.name,
+                            f"Could not recreate '{repo_name}' on GitHub. Check the API token.",
+                        )
+                    recreated = True
 
         status = await run_command(["git", "status", "--porcelain"], cwd=cwd)
         if not status.ok:
             return ToolResult.failure(self.name, f"git status failed: {status.combined()}")
-        if not status.stdout.strip():
+        if not status.stdout.strip() and not recreated:
             return ToolResult(
                 tool=self.name, ok=True, summary="No changes to commit.", data={"status": "clean"},
             )
