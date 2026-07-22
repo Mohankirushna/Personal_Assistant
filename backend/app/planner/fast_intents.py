@@ -511,6 +511,11 @@ _PUSH_REPO_PATTERNS = [
         r"^push\s+(?:the\s+)?(?P<name>.+?)\s+(?:project\s+)?to\s+github"
         r"(?:\s+as\s+(?P<repo>.+))?$"
     ),
+    # "create a repo and push fitness project", "create repo and push fitness to github"
+    re.compile(
+        r"^create\s+(?:a\s+)?repo(?:sitory)?\s+(?:and\s+)?push\s+(?:the\s+)?(?P<name>.+?)"
+        r"(?:\s+(?:project|repo))?(?:\s+to\s+github)?(?:\s+as\s+(?P<repo>.+))?$"
+    ),
 ]
 
 # "push changes to github", "push my changes to github", "push it to github"

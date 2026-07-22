@@ -804,6 +804,10 @@ def test_bare_reference_words_never_become_a_fake_project_name(utterance: str) -
         ("push jarvis to github", "jarvis", None),
         ("push the jarvis project to github", "jarvis", None),
         ("push fitness to github as fitnessapp", "fitness", "fitnessapp"),
+        ("create a repo and push fitness project", "fitness", None),
+        ("create repo and push fitness", "fitness", None),
+        ("create a repo and push fitness to github", "fitness", None),
+        ("create a repo and push fitness project as fitness-app", "fitness", "fitnessapp"),
     ],
 )
 def test_push_repo_commands_route_to_github_push(
