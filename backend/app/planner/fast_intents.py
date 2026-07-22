@@ -453,6 +453,35 @@ def _match_delete_repo(normalized: str) -> str | None:
     return None
 
 
+# "create a new repo in github as test", "create a repo called test", "make a
+# github repo named test" — bootstrap a brand-new project with no existing
+# local folder. The small planner unreliably extracts the repo name from this
+# phrasing (it isn't the demonstrated "push X to github as Y" example), so
+# match it deterministically and route straight to github_push with only
+# repo_name set (no project — the tool creates a fresh folder for it).
+_CREATE_REPO_PATTERNS = [
+    re.compile(
+        r"^(?:create|make|start)\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo(?:sitory)?"
+        r"\s+(?:in\s+github\s+|on\s+github\s+)?(?:as|called|named)\s+(?P<name>.+)$"
+    ),
+    re.compile(
+        r"^(?:create|make|start)\s+(?:a\s+)?(?:new\s+)?github\s+repo(?:sitory)?"
+        r"\s+(?:as|called|named)\s+(?P<name>.+)$"
+    ),
+]
+
+
+def _match_create_repo(normalized: str) -> str | None:
+    """Return the repo name for a 'create a new repo as X' command, else None."""
+    for pattern in _CREATE_REPO_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            if name:
+                return name
+    return None
+
+
 _TRAILING_BROWSER = re.compile(
     r"^(?P<query>.+?) (?:in|on|using|with) "
     r"(?P<browser>brave|google chrome|chrome|safari|firefox)$"
@@ -512,6 +541,10 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
     delete_name = _match_delete_repo(normalized)
     if delete_name:
         return ToolCallRequest(name="github_delete_repo", arguments={"project": delete_name})
+    # "create a new repo as X" bootstraps a fresh project (no project named).
+    create_repo_name = _match_create_repo(normalized)
+    if create_repo_name:
+        return ToolCallRequest(name="github_push", arguments={"repo_name": create_repo_name})
     timer_result = _match_timer(normalized)
     if timer_result:
         minutes, label = timer_result

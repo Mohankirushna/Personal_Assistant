@@ -240,7 +240,13 @@ class GitHubPushTool(Tool):
         setup = ""
         if args.repo_name:
             username = (args.github_username or "Mohankirushna").strip()
-            setup = f"Create new repo 'github.com/{username}/{args.repo_name}', then "
+            if not args.project:
+                setup = (
+                    f"Create new local folder 'projects/{args.repo_name}', create "
+                    f"repo 'github.com/{username}/{args.repo_name}', then "
+                )
+            else:
+                setup = f"Create new repo 'github.com/{username}/{args.repo_name}', then "
         return f"{setup}about to push{where} with message '{msg}' to branch {branch}. Confirm?"
 
     async def run(self, args: PushChangesArgs) -> ToolResult:  # type: ignore[override]
@@ -263,9 +269,24 @@ class GitHubPushTool(Tool):
                     return ToolResult.failure(
                         self.name, f"Could not find a local project matching '{args.project}'.{detail}"
                     )
+        elif args.repo_name:
+            # No project named: bootstrap a brand-new one under projects_dir,
+            # named after the repo. NEVER fall back to the server's own
+            # process directory — it has no .gitignore, so `git add .` there
+            # would stage and push .env (GitHub token, WAHA API key) to a
+            # public repo.
+            cwd = self._settings.resolved_projects_dir / args.repo_name.lower()
+            cwd.mkdir(parents=True, exist_ok=True)
+
+        if cwd is None:
+            return ToolResult.failure(
+                self.name,
+                "No project or repo name given. Say 'push [project] to github' for an "
+                "existing project, or 'create a new repo as [name]' to start one.",
+            )
 
         # Check if this is a git repo; if not, initialize one
-        git_dir = (cwd if cwd else Path.cwd()) / ".git"
+        git_dir = cwd / ".git"
         if not git_dir.exists():
             if not args.repo_name:
                 return ToolResult.failure(
@@ -299,6 +320,12 @@ class GitHubPushTool(Tool):
             remote_result = await run_command(["git", "remote", "add", "origin", repo_url], cwd=cwd)
             if not remote_result.ok:
                 return ToolResult.failure(self.name, f"git remote add failed: {remote_result.combined()}")
+
+            # A brand-new bootstrapped folder has nothing to commit yet; without
+            # a seed file the push below would silently no-op ("no changes to
+            # commit") and the repo would sit empty forever.
+            if not any(cwd.iterdir()):
+                (cwd / "README.md").write_text(f"# {repo_name}\n")
 
         status = await run_command(["git", "status", "--porcelain"], cwd=cwd)
         if not status.ok:
