@@ -751,3 +751,47 @@ def test_delete_repo_commands_route_to_tool(utterance: str, project: str) -> Non
     assert call is not None, f"{utterance!r} should match delete pattern"
     assert call.name == "github_delete_repo"
     assert call.arguments == {"project": project}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "project"),
+    [
+        ("open fitness project in github", "fitness"),
+        ("open fitness in github", "fitness"),
+        ("open fitness github", "fitness"),
+        ("open fitness github repo", "fitness"),
+        ("show me fitness on github", "fitness"),
+        ("open the github repo for fitness", "fitness"),
+        ("view jarvis on github", "jarvis"),
+    ],
+)
+def test_open_repo_commands_route_to_tool(utterance: str, project: str) -> None:
+    # The original bug: these were caught by the generic "open X" app
+    # launcher, which tried (and failed) to open a macOS app literally named
+    # "fitness project in github".
+    call = match_fast_intent(utterance)
+    assert call is not None, f"{utterance!r} should match open-repo pattern"
+    assert call.name == "github_open_repo"
+    assert call.arguments == {"project": project}
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "open the github",
+        "open github",  # handled separately by _OPEN_WEBSITE, not open_repo
+        "delete the repo",
+        "delete repo",
+        "where is the project",
+        "where is the repo",
+    ],
+)
+def test_bare_reference_words_never_become_a_fake_project_name(utterance: str) -> None:
+    # A bare "the"/"it" left over from optional-article backtracking must
+    # never be treated as a literal project name (e.g. github_open_repo
+    # called with project="the"). These must fall through — either to a
+    # different fast-intent rule or to the full LLM planner, which has
+    # conversation history to resolve what "the" or "it" refers to.
+    call = match_fast_intent(utterance)
+    if call is not None:
+        assert call.arguments.get("project") not in {"the", "it", "my", "a", "an", "this", "that"}

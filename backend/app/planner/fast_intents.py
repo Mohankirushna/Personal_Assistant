@@ -380,6 +380,16 @@ _BRIGHTNESS_ADJUST = re.compile(
     r"(?: by (?P<amount>\d{1,3})(?: ?percent)?)?$"
 )
 
+# A bare article/pronoun ("open the github" with no project named) can end up
+# captured as the name itself: the optional "(?:the\s+)?" in these patterns
+# backtracks and lets ".+?" swallow "the" when there's nothing after it for
+# the literal suffix ("github", "repo", ...) to attach to otherwise. Reject
+# these rather than resolving to a nonsense project like "the" — the caller
+# should fall through to the full LLM planner, which has conversation
+# history and can resolve "it"/"the" contextually.
+_BARE_REFERENCE_WORDS = frozenset({"the", "my", "a", "an", "it", "this", "that"})
+
+
 # "where is the X project", "path for X", "locate the X repo" — a question
 # about a LOCAL project's location, never a web search. This MUST be matched
 # before the live-info/general-knowledge web routing below, because a project
@@ -417,7 +427,7 @@ def _match_locate_project(normalized: str) -> str | None:
             name = re.sub(
                 r"\s+(?:project|repo|repository|folder|directory)$", "", name
             ).strip()
-            if name:
+            if name and name not in _BARE_REFERENCE_WORDS:
                 return name
     return None
 
@@ -448,10 +458,45 @@ def _match_delete_repo(normalized: str) -> str | None:
             name = re.sub(
                 r"\s+(?:repo|repository|project|github)?$", "", name
             ).strip()
-            if name:
+            if name and name not in _BARE_REFERENCE_WORDS:
                 return name
     return None
 
+
+# "open fitness project in github", "open fitness github repo", "show me
+# fitness on github", "open the github repo for fitness" — with an explicit
+# project named, this must go straight to github_open_repo. Without this,
+# the generic "open X" catch-all (_OPEN_APP, below) would try to launch a
+# macOS application literally named "fitness project in github".
+_OPEN_REPO_PATTERNS = [
+    re.compile(
+        r"^(?:open|show me|show|view)\s+(?:the\s+)?(?P<name>.+?)"
+        r"\s+(?:project\s+)?(?:repo\s+)?(?:in|on)\s+github$"
+    ),
+    re.compile(
+        r"^(?:open|show me|show|view)\s+(?:the\s+)?(?P<name>.+?)\s+github"
+        r"(?:\s+repo(?:sitory)?)?$"
+    ),
+    re.compile(
+        r"^(?:open|show me|show|view)\s+(?:the\s+)?github\s+(?:repo|page|link)?"
+        r"\s*for\s+(?:the\s+)?(?P<name>.+)$"
+    ),
+]
+
+
+def _match_open_repo(normalized: str) -> str | None:
+    """Return the project name for an 'open X on github' command, else None."""
+    for pattern in _OPEN_REPO_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            name = re.sub(r"^(?:the|my|a)\s+", "", name).strip()
+            name = re.sub(
+                r"\s+(?:project|repo|repository)$", "", name
+            ).strip()
+            if name and name not in _BARE_REFERENCE_WORDS:
+                return name
+    return None
 
 
 _TRAILING_BROWSER = re.compile(
@@ -513,6 +558,12 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
     delete_name = _match_delete_repo(normalized)
     if delete_name:
         return ToolCallRequest(name="github_delete_repo", arguments={"project": delete_name})
+    # "open X on github" with an explicit project — before the generic "open
+    # X" app-launcher below, which would otherwise try to open a macOS app
+    # literally named "fitness project in github".
+    open_repo_name = _match_open_repo(normalized)
+    if open_repo_name:
+        return ToolCallRequest(name="github_open_repo", arguments={"project": open_repo_name})
     timer_result = _match_timer(normalized)
     if timer_result:
         minutes, label = timer_result
@@ -715,11 +766,17 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
         app_name = open_app.group("name")
         words = set(app_name.split())
         if (
-            {"folder", "file", "document"} & words
+            {"folder", "file", "document", "github", "repo", "repository"} & words
             or app_name.startswith(("the next ", "next "))
             or "/" in app_name
             or "." in app_name
         ):
+            # "github"/"repo" here means _match_open_repo above didn't find an
+            # explicit project name (e.g. bare "open the github" referring
+            # back to whatever was just discussed) — that needs conversation
+            # history to resolve, which only the full LLM planner has. Never
+            # let this become an attempt to launch a literal app named
+            # "the github".
             return None
         return ToolCallRequest(
             name="open_app", arguments={"name": app_name}
