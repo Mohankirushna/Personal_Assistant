@@ -347,46 +347,31 @@ async def test_push_requires_repo_name_if_no_git(tmp_path: Path) -> None:
     assert "git repo found" in result.summary.lower()
 
 
-async def test_push_bootstraps_new_folder_when_no_project_named(
+async def test_push_requires_a_project_even_with_repo_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """'create a new repo as test' (no project mentioned) must create a fresh
-    folder under projects_dir, seed it with something to commit, and push —
-    never touch the backend server's own process directory (see the .env
-    credential-leak scenario this replaces: git init + `add .` in a directory
-    with no .gitignore would have staged JARVIS_GITHUB_TOKEN)."""
+    """repo_name alone, with no project named, must fail clearly rather than
+    bootstrapping a folder or touching anything on disk."""
     registry = ProjectRegistry(tmp_path)
     settings = Settings(_env_file=None, projects_dir=tmp_path, github_token="fake_token")
     fake = FakeOllamaClient()
-    fake.queued.append("Initial commit")
     manager = ModelManager(fake, settings)
 
+    calls: list[list[str]] = []
+
     async def mock_run(cmd, cwd=None, timeout=30.0):
-        if cmd[0] == "curl":
-            return CommandOutput(0, '{"id": 1, "name": "test"}', "")
-        if "init" in cmd or "remote" in cmd or "add" in cmd or "commit" in cmd or "push" in cmd:
-            return CommandOutput(0, "", "")
-        if "status" in cmd:
-            return CommandOutput(0, "A README.md\n", "")
-        if "diff" in cmd:
-            return CommandOutput(0, "+# test\n", "")
-        if "rev-parse" in cmd:
-            return CommandOutput(0, "main\n", "")
-        if "config" in cmd:
-            return CommandOutput(0, "https://github.com/mohan/test.git\n", "")
-        if cmd[0] == "open":
-            return CommandOutput(0, "", "")
-        return CommandOutput(1, "", "unexpected: " + " ".join(cmd))
+        calls.append(cmd)
+        return CommandOutput(1, "", "should not be called")
 
     monkeypatch.setattr(github_module, "run_command", mock_run)
 
     tool = GitHubPushTool(registry, fake, manager, settings)
     result = await tool.run(PushChangesArgs(repo_name="test"))
 
-    assert result.ok, result.summary
-    new_folder = tmp_path / "test"
-    assert new_folder.is_dir()
-    assert (new_folder / "README.md").exists()
+    assert not result.ok
+    assert "which project" in result.summary.lower()
+    assert calls == []  # no git command ever ran
+    assert not (tmp_path / "test").exists()  # no folder was created
 
 
 async def test_push_never_falls_back_to_the_servers_own_directory(

@@ -751,29 +751,3 @@ def test_delete_repo_commands_route_to_tool(utterance: str, project: str) -> Non
     assert call is not None, f"{utterance!r} should match delete pattern"
     assert call.name == "github_delete_repo"
     assert call.arguments == {"project": project}
-
-
-@pytest.mark.parametrize(
-    ("utterance", "repo_name"),
-    [
-        ("create a new repo in github as test", "test"),
-        ("create a repo called test", "test"),
-        ("make a github repo named test", "test"),
-        ("create repo as myproject", "test".replace("test", "myproject")),
-        ("start a new repo called blog", "blog"),
-        # Punctuation is stripped by the shared normalizer before any pattern
-        # runs (same as every other fast-intent rule) — the hyphen is gone.
-        ("create a new github repo as skin-analyser", "skinanalyser"),
-    ],
-)
-def test_create_repo_commands_route_to_push_with_only_repo_name(
-    utterance: str, repo_name: str
-) -> None:
-    # The original bug: this phrasing must extract the name deterministically
-    # (the 3B planner missed it and asked the user to repeat themselves).
-    # No "project" key must be set — that's what tells github_push to
-    # bootstrap a brand-new folder instead of touching an existing one.
-    call = match_fast_intent(utterance)
-    assert call is not None, f"{utterance!r} should match create-repo pattern"
-    assert call.name == "github_push"
-    assert call.arguments == {"repo_name": repo_name}

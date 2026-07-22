@@ -240,13 +240,7 @@ class GitHubPushTool(Tool):
         setup = ""
         if args.repo_name:
             username = (args.github_username or "Mohankirushna").strip()
-            if not args.project:
-                setup = (
-                    f"Create new local folder 'projects/{args.repo_name}', create "
-                    f"repo 'github.com/{username}/{args.repo_name}', then "
-                )
-            else:
-                setup = f"Create new repo 'github.com/{username}/{args.repo_name}', then "
+            setup = f"Create new repo 'github.com/{username}/{args.repo_name}', then "
         return f"{setup}about to push{where} with message '{msg}' to branch {branch}. Confirm?"
 
     async def run(self, args: PushChangesArgs) -> ToolResult:  # type: ignore[override]
@@ -269,20 +263,14 @@ class GitHubPushTool(Tool):
                     return ToolResult.failure(
                         self.name, f"Could not find a local project matching '{args.project}'.{detail}"
                     )
-        elif args.repo_name:
-            # No project named: bootstrap a brand-new one under projects_dir,
-            # named after the repo. NEVER fall back to the server's own
-            # process directory — it has no .gitignore, so `git add .` there
-            # would stage and push .env (GitHub token, WAHA API key) to a
-            # public repo.
-            cwd = self._settings.resolved_projects_dir / args.repo_name.lower()
-            cwd.mkdir(parents=True, exist_ok=True)
 
         if cwd is None:
+            # NEVER fall back to the server's own process directory — it has
+            # no .gitignore, so `git add .` there would stage and push .env
+            # (GitHub token, WAHA API key) to a public repo.
             return ToolResult.failure(
                 self.name,
-                "No project or repo name given. Say 'push [project] to github' for an "
-                "existing project, or 'create a new repo as [name]' to start one.",
+                "Which project is this for? Say 'push [project] to github as [repo-name]'.",
             )
 
         # Check if this is a git repo; if not, initialize one
