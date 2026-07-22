@@ -795,3 +795,47 @@ def test_bare_reference_words_never_become_a_fake_project_name(utterance: str) -
     call = match_fast_intent(utterance)
     if call is not None:
         assert call.arguments.get("project") not in {"the", "it", "my", "a", "an", "this", "that"}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "project", "repo_name"),
+    [
+        ("push jarvis project to github", "jarvis", None),
+        ("push jarvis to github", "jarvis", None),
+        ("push the jarvis project to github", "jarvis", None),
+        ("push fitness to github as fitnessapp", "fitness", "fitnessapp"),
+    ],
+)
+def test_push_repo_commands_route_to_github_push(
+    utterance: str, project: str, repo_name: str | None
+) -> None:
+    # The original bug: this phrasing was ambiguous between github_push and
+    # the low-level generic `git` tool (raw arguments + repo path); the small
+    # planner picked `git` and failed to fill its required fields. This must
+    # route deterministically to github_push instead.
+    call = match_fast_intent(utterance)
+    assert call is not None, f"{utterance!r} should match push-repo pattern"
+    assert call.name == "github_push"
+    expected = {"project": project}
+    if repo_name:
+        expected["repo_name"] = repo_name
+    assert call.arguments == expected
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "push changes to github",
+        "push my changes to github",
+        "push it to github",
+        "push everything to github",
+    ],
+)
+def test_push_generic_phrases_do_not_fake_a_project_name(utterance: str) -> None:
+    # "changes"/"it"/"everything" are not project names — must fall through
+    # rather than routing to github_push with a nonsense project.
+    call = match_fast_intent(utterance)
+    if call is not None and call.name == "github_push":
+        assert call.arguments.get("project") not in {
+            "changes", "my changes", "the changes", "it", "everything", "all", "code",
+        }

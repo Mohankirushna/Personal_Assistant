@@ -499,6 +499,46 @@ def _match_open_repo(normalized: str) -> str | None:
     return None
 
 
+# "push jarvis project to github", "push fitness to github as fitness-app" —
+# the codebase also has a generic low-level `git` tool (raw arguments + repo
+# path) whose description overlaps with github_push's ("push", "commit").
+# The small planner has picked the wrong one and failed to fill its required
+# fields (observed live: called `git` with only {"project": "jarvis_v2"},
+# missing its required `arguments`/`repo`). Matching this deterministically
+# removes the ambiguity entirely for the common phrasing.
+_PUSH_REPO_PATTERNS = [
+    re.compile(
+        r"^push\s+(?:the\s+)?(?P<name>.+?)\s+(?:project\s+)?to\s+github"
+        r"(?:\s+as\s+(?P<repo>.+))?$"
+    ),
+]
+
+# "push changes to github", "push my changes to github", "push it to github"
+# — these name no actual project, just refer generically to whatever's
+# outstanding. Must fall through (to the full planner, which can ask which
+# project) rather than treating "changes" as a literal project name.
+_PUSH_GENERIC_WORDS = frozenset(
+    {"changes", "my changes", "the changes", "it", "everything", "all", "code", "this"}
+)
+
+
+def _match_push_repo(normalized: str) -> tuple[str, str | None] | None:
+    """Return (project, repo_name) for a 'push X to github' command, else None."""
+    for pattern in _PUSH_REPO_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            name = re.sub(r"^(?:the|my|a)\s+", "", name).strip()
+            if (
+                name
+                and name not in _BARE_REFERENCE_WORDS
+                and name not in _PUSH_GENERIC_WORDS
+            ):
+                repo = match.group("repo")
+                return name, (repo.strip() if repo else None)
+    return None
+
+
 _TRAILING_BROWSER = re.compile(
     r"^(?P<query>.+?) (?:in|on|using|with) "
     r"(?P<browser>brave|google chrome|chrome|safari|firefox)$"
@@ -564,6 +604,15 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
     open_repo_name = _match_open_repo(normalized)
     if open_repo_name:
         return ToolCallRequest(name="github_open_repo", arguments={"project": open_repo_name})
+    # "push X (project) to github" — bypasses the ambiguity between
+    # github_push and the low-level `git` tool for this common phrasing.
+    push_repo_match = _match_push_repo(normalized)
+    if push_repo_match:
+        push_project, push_repo_name = push_repo_match
+        push_args: dict[str, object] = {"project": push_project}
+        if push_repo_name:
+            push_args["repo_name"] = push_repo_name
+        return ToolCallRequest(name="github_push", arguments=push_args)
     timer_result = _match_timer(normalized)
     if timer_result:
         minutes, label = timer_result
