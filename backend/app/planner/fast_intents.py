@@ -499,6 +499,35 @@ def _match_open_repo(normalized: str) -> str | None:
     return None
 
 
+# "open fitness project", "open the jarvis folder", "show skin project" —
+# with "project"/"folder" suffix, this is clearly a local folder intent,
+# never a macOS app-launcher attempt. Routes to locate_project which will
+# report the folder path and status.
+_OPEN_PROJECT_PATTERNS = [
+    re.compile(
+        r"^(?:open|show|view)\s+(?:the\s+)?(?P<name>.+?)"
+        r"\s+(?:project|folder|directory)(?:\s+(?:in\s+finder|in\s+vscode))?$"
+    ),
+]
+
+
+def _match_open_project(normalized: str) -> str | None:
+    """Return the project name for an 'open X project/folder' command, else None."""
+    for pattern in _OPEN_PROJECT_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            name = re.sub(r"^(?:the|my|a)\s+", "", name).strip()
+            # Exclude generic terms that aren't project names
+            if (
+                name
+                and name not in _BARE_REFERENCE_WORDS
+                and name not in {"next"}
+            ):
+                return name
+    return None
+
+
 # "push jarvis project to github", "push fitness to github as fitness-app" —
 # the codebase also has a generic low-level `git` tool (raw arguments + repo
 # path) whose description overlaps with github_push's ("push", "commit").
@@ -609,6 +638,12 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
     open_repo_name = _match_open_repo(normalized)
     if open_repo_name:
         return ToolCallRequest(name="github_open_repo", arguments={"project": open_repo_name})
+    # "open fitness project", "show the jarvis folder" — routes to locate_project
+    # which confirms the project exists and reports its path, so the user knows
+    # the exact location and the LLM can then open it.
+    open_project_name = _match_open_project(normalized)
+    if open_project_name:
+        return ToolCallRequest(name="locate_project", arguments={"project": open_project_name})
     # "push X (project) to github" — bypasses the ambiguity between
     # github_push and the low-level `git` tool for this common phrasing.
     push_repo_match = _match_push_repo(normalized)
