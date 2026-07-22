@@ -128,6 +128,41 @@ def test_question_with_explicit_browser_opens_a_page(utterance: str, expected_to
     assert call.name == expected_tool
 
 
+@pytest.mark.parametrize(
+    ("utterance", "project"),
+    [
+        ("where is the fitness project", "fitness"),
+        ("where is the stocks project", "stocks"),  # 'stocks' must NOT web-search
+        ("where is the stocks project located", "stocks"),
+        ("give me the folder path for the fitness project", "fitness"),
+        ("locate the jarvis repo", "jarvis"),
+        ("whats the local path for skin", "skin"),
+    ],
+)
+def test_project_location_questions_use_the_locate_tool(utterance: str, project: str) -> None:
+    # A project-location question must reach locate_project, never web search —
+    # even when the project name is a live-info trigger word like "stocks".
+    call = match_fast_intent(utterance)
+    assert call is not None, utterance
+    assert call.name == "locate_project"
+    assert call.arguments == {"project": project}
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "what is the stock price today",
+        "whats the latest news",
+        "what is the tesla stock price",
+    ],
+)
+def test_stock_and_news_questions_still_web_search(utterance: str) -> None:
+    # The locate-project fast-path must not steal genuine live-info questions.
+    call = match_fast_intent(utterance)
+    assert call is not None
+    assert call.name == "web_answer"
+
+
 def test_ordinary_conversation_does_not_trigger_web_search() -> None:
     assert match_fast_intent("How are you today?") is None
 
@@ -697,3 +732,22 @@ def test_calendar_commands_use_calendar_tool(utterance: str, day: str) -> None:
     assert call is not None, f"{utterance!r} should match"
     assert call.name == "calendar"
     assert call.arguments == {"day": day}
+
+
+@pytest.mark.parametrize(
+    ("utterance", "project"),
+    [
+        ("delete the fitness repo", "fitness"),
+        ("delete fitness repo", "fitness"),
+        ("remove the fitness repo", "fitness"),
+        ("delete fitness from github", "fitness"),
+        ("remove fitness from github", "fitness"),
+        ("delete the github repo for fitness", "fitness"),
+        ("delete repository for the fitness project", "fitness"),
+    ],
+)
+def test_delete_repo_commands_route_to_tool(utterance: str, project: str) -> None:
+    call = match_fast_intent(utterance)
+    assert call is not None, f"{utterance!r} should match delete pattern"
+    assert call.name == "github_delete_repo"
+    assert call.arguments == {"project": project}

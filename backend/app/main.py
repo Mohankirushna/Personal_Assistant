@@ -113,7 +113,13 @@ def create_app(
             tool_registry.register(LookAtScreenTool(vision_service))
 
             from app.core.project_registry import ProjectRegistry
-            from app.tools.github import GitHubOpenRepoTool, GitHubPushTool, RefreshProjectsTool
+            from app.tools.github import (
+                GitHubDeleteRepoTool,
+                GitHubOpenRepoTool,
+                GitHubPushTool,
+                LocateProjectTool,
+                RefreshProjectsTool,
+            )
 
             project_registry = ProjectRegistry(app_settings.resolved_projects_dir)
             tool_registry.register(
@@ -121,6 +127,12 @@ def create_app(
             )
             tool_registry.register(
                 GitHubPushTool(project_registry, client, model_manager, app_settings)
+            )
+            tool_registry.register(
+                LocateProjectTool(project_registry, client, model_manager, app_settings)
+            )
+            tool_registry.register(
+                GitHubDeleteRepoTool(project_registry, client, model_manager, app_settings)
             )
             tool_registry.register(RefreshProjectsTool(project_registry))
 

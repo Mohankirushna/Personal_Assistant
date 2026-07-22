@@ -18,8 +18,12 @@ from app.core.project_registry import ProjectRegistry
 from app.tools import github as github_module
 from app.tools._common import CommandOutput
 from app.tools.github import (
+    DeleteRepoArgs,
+    GitHubDeleteRepoTool,
     GitHubOpenRepoTool,
     GitHubPushTool,
+    LocateProjectArgs,
+    LocateProjectTool,
     OpenRepoArgs,
     PushChangesArgs,
     RefreshProjectsTool,
@@ -133,7 +137,10 @@ async def test_open_repo_no_remote_configured(tmp_path: Path, settings: Settings
     assert "no GitHub remote" in result.summary
 
 
-async def test_push_no_changes(tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_push_no_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Initialize a real git repo for this test
+    _make_repo(tmp_path, "repo", "https://github.com/mohan/repo.git")
+    settings = Settings(_env_file=None, projects_dir=tmp_path)
     registry = ProjectRegistry(tmp_path)
     fake = FakeOllamaClient()
     manager = ModelManager(fake, settings)
@@ -146,15 +153,17 @@ async def test_push_no_changes(tmp_path: Path, settings: Settings, monkeypatch: 
     monkeypatch.setattr(github_module, "run_command", mock_run)
 
     tool = GitHubPushTool(registry, fake, manager, settings)
-    result = await tool.run(PushChangesArgs())
+    result = await tool.run(PushChangesArgs(project="repo"))
 
     assert result.ok
     assert "No changes" in result.summary
 
 
 async def test_push_executes_full_sequence(
-    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _make_repo(tmp_path, "repo", "https://github.com/mohan/repo.git")
+    settings = Settings(_env_file=None, projects_dir=tmp_path)
     registry = ProjectRegistry(tmp_path)
     fake = FakeOllamaClient()
     fake.queued.append("Fix bug in app.py")
@@ -185,7 +194,7 @@ async def test_push_executes_full_sequence(
     monkeypatch.setattr(github_module, "run_command", mock_run)
 
     tool = GitHubPushTool(registry, fake, manager, settings)
-    result = await tool.run(PushChangesArgs())
+    result = await tool.run(PushChangesArgs(project="repo"))
 
     assert result.ok, result.summary
     assert "Fix bug in app.py" in result.summary
@@ -211,6 +220,53 @@ async def test_push_unknown_project_fails_honestly(
     assert "Could not find" in result.summary
 
 
+async def test_locate_project_returns_real_path_and_remote(
+    tmp_path: Path, settings: Settings
+) -> None:
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = LocateProjectTool(registry, fake, manager, settings)
+    result = await tool.run(LocateProjectArgs(project="give me the folder path for fitness"))
+
+    assert result.ok, result.summary
+    assert result.data["path"] == str(tmp_path / "fitness")
+    assert result.data["is_git"] is True
+    assert result.data["remote_url"] == "https://github.com/mohan/fitness-app"
+
+
+async def test_locate_project_plain_folder_no_git(tmp_path: Path) -> None:
+    (tmp_path / "newthing").mkdir()
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(_env_file=None, projects_dir=tmp_path)
+    fake = FakeOllamaClient()
+    fake.queued.append("unknown")  # LLM fallback finds nothing
+    manager = ModelManager(fake, settings)
+
+    tool = LocateProjectTool(registry, fake, manager, settings)
+    result = await tool.run(LocateProjectArgs(project="newthing"))
+
+    assert result.ok, result.summary
+    assert result.data["is_git"] is False
+    assert result.data["path"] == str(tmp_path / "newthing")
+
+
+async def test_locate_project_not_found(tmp_path: Path, settings: Settings) -> None:
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    fake = FakeOllamaClient()
+    fake.queued.append("unknown")
+    manager = ModelManager(fake, settings)
+
+    tool = LocateProjectTool(registry, fake, manager, settings)
+    result = await tool.run(LocateProjectArgs(project="nonexistent-xyz"))
+
+    assert not result.ok
+    assert "couldn't find" in result.summary.lower()
+
+
 async def test_refresh_projects_reports_count(tmp_path: Path) -> None:
     _make_repo(tmp_path, "skin_analyser", "git@github.com:mohan/skin-analyser.git")
     _make_repo(tmp_path, "jarvis_v2", "https://github.com/mohan/Personal_Assistant.git")
@@ -222,3 +278,118 @@ async def test_refresh_projects_reports_count(tmp_path: Path) -> None:
     assert result.ok
     assert "2" in result.summary
     assert "skin_analyser" in result.summary and "jarvis_v2" in result.summary
+
+
+async def test_push_creates_repo_if_no_git_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a project folder exists but has no .git, git init + remote add + push."""
+    folder = tmp_path / "new_project"
+    folder.mkdir()
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(_env_file=None, projects_dir=tmp_path)
+    fake = FakeOllamaClient()
+    fake.queued.append("Add new feature")
+    manager = ModelManager(fake, settings)
+
+    calls: list[list[str]] = []
+
+    async def mock_run(cmd, cwd=None, timeout=30.0):
+        calls.append(cmd)
+        if "init" in cmd:
+            return CommandOutput(0, "", "")
+        if "remote" in cmd:
+            return CommandOutput(0, "", "")
+        if "status" in cmd:
+            return CommandOutput(0, "M file.py\n", "")
+        if "add" in cmd:
+            return CommandOutput(0, "", "")
+        if "diff" in cmd:
+            return CommandOutput(0, "diff --git a/file.py b/file.py\n+new feature\n", "")
+        if "commit" in cmd:
+            return CommandOutput(0, "", "")
+        if "push" in cmd:
+            return CommandOutput(0, "", "")
+        if "rev-parse" in cmd:
+            return CommandOutput(0, "main\n", "")
+        if "config" in cmd:
+            return CommandOutput(0, "https://github.com/mohan/new_project.git\n", "")
+        if cmd[0] == "open":
+            return CommandOutput(0, "", "")
+        return CommandOutput(1, "", "unexpected: " + " ".join(cmd))
+
+    monkeypatch.setattr(github_module, "run_command", mock_run)
+
+    tool = GitHubPushTool(registry, fake, manager, settings)
+    result = await tool.run(PushChangesArgs(project="new_project", repo_name="new_project"))
+
+    assert result.ok, result.summary
+    # Verify git init and remote add were called
+    cmd_kinds = [" ".join(c[:2]) for c in calls]
+    assert "git init" in cmd_kinds
+    assert "git remote" in cmd_kinds
+
+
+async def test_push_requires_repo_name_if_no_git(tmp_path: Path) -> None:
+    """If no .git and no repo_name provided, fail with helpful message."""
+    folder = tmp_path / "new_project"
+    folder.mkdir()
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(_env_file=None, projects_dir=tmp_path)
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = GitHubPushTool(registry, fake, manager, settings)
+    result = await tool.run(PushChangesArgs(project="new_project"))
+
+    assert not result.ok
+    assert "repo name" in result.summary.lower()
+    assert "git repo found" in result.summary.lower()
+
+
+async def test_delete_repo_requires_github_token(tmp_path: Path) -> None:
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(_env_file=None, projects_dir=tmp_path, github_token=None)
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    result = await tool.run(DeleteRepoArgs(project="fitness"))
+
+    assert not result.ok
+    assert "token" in result.summary.lower()
+
+
+async def test_delete_repo_requires_github_remote(tmp_path: Path) -> None:
+    _make_repo(tmp_path, "fitness", remote=None)
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(
+        _env_file=None, projects_dir=tmp_path, github_token="fake_token_123"
+    )
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    result = await tool.run(DeleteRepoArgs(project="fitness"))
+
+    assert not result.ok
+    assert "no github remote" in result.summary.lower()
+
+
+async def test_delete_repo_confirmation_preview(tmp_path: Path) -> None:
+    _make_repo(tmp_path, "fitness", "https://github.com/mohan/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(
+        _env_file=None, projects_dir=tmp_path, github_token="fake_token"
+    )
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    preview = tool.confirmation_action(DeleteRepoArgs(project="fitness"))
+
+    assert preview is not None
+    assert "delete" in preview.lower()
+    assert "fitness" in preview.lower()
+    assert "cannot be undone" in preview.lower()

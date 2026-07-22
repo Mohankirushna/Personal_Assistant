@@ -30,17 +30,50 @@ def test_normalize_https_remote() -> None:
     )
 
 
-async def test_refresh_finds_real_repos_only(tmp_path: Path) -> None:
+async def test_refresh_indexes_all_folders_flagging_git(tmp_path: Path) -> None:
+    """Non-git folders are indexed too (so keyword matching finds them), but
+    flagged is_git=False and carry no remote."""
     _make_repo(tmp_path, "skin_analyser", "git@github.com:mohan/skin-analyser.git")
-    (tmp_path / "plain_folder").mkdir()  # no .git — must be skipped
+    (tmp_path / "automated_mail_classification-main").mkdir()  # no .git
+    (tmp_path / ".hidden").mkdir()  # dotfolders skipped
 
     registry = ProjectRegistry(tmp_path)
     count = await registry.refresh()
 
-    projects = await registry.list_projects()
-    names = {p.name for p in projects}
-    assert names == {"skin_analyser"}
-    assert count == 1
+    projects = {p.name: p for p in await registry.list_projects()}
+    assert set(projects) == {"skin_analyser", "automated_mail_classification-main"}
+    assert count == 2
+    assert projects["skin_analyser"].is_git is True
+    assert projects["automated_mail_classification-main"].is_git is False
+    assert projects["automated_mail_classification-main"].remote_url is None
+
+
+async def test_find_matches_non_git_folder_by_keyword(tmp_path: Path) -> None:
+    """The original bug: 'automated mail' must resolve the non-git folder."""
+    _make_repo(tmp_path, "jarvis_v2", "https://github.com/mohan/Personal_Assistant.git")
+    (tmp_path / "automated_mail_classification-main").mkdir()
+
+    registry = ProjectRegistry(tmp_path)
+    await registry.refresh()
+
+    match = await registry.find("where is my automated mail project")
+    assert match is not None
+    assert match.name == "automated_mail_classification-main"
+    assert match.is_git is False
+
+
+async def test_find_prefers_stronger_keyword_overlap(tmp_path: Path) -> None:
+    (tmp_path / "automated_mail_classification-main").mkdir()
+    (tmp_path / "mailer").mkdir()
+
+    registry = ProjectRegistry(tmp_path)
+    await registry.refresh()
+
+    # "automated mail classification" overlaps the long compound name on
+    # multiple long tokens; it should win over the folder sharing only "mail".
+    match = await registry.find("automated mail classification")
+    assert match is not None
+    assert match.name == "automated_mail_classification-main"
 
 
 async def test_repo_without_remote_reports_none(tmp_path: Path) -> None:

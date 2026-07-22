@@ -5,13 +5,19 @@ repo's actual 'origin' remote — never a hardcoded or guessed URL. Push
 workflows run against the resolved project's own directory (or Jarvis's own
 directory if no project is named), with staged confirmations (branch, commit
 message, final push) and open the repo/branch in the browser afterward.
+
+If GitHub API credentials are configured, new repos are auto-created on GitHub
+before pushing (no manual step needed).
 """
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import ClassVar
 
+import httpx
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
@@ -55,6 +61,44 @@ async def _resolve_project(
     for project in projects:
         if project.name.lower() == matched_name:
             return project
+    return None
+
+
+async def _create_repo_on_github(
+    repo_name: str, username: str, token: str
+) -> str | None:
+    """Create a new public repo on GitHub via the API.
+
+    Returns the HTTPS clone URL on success, or None if creation failed.
+    """
+    if not token or not username:
+        return None
+    url = "https://api.github.com/user/repos"
+    payload = json.dumps({"name": repo_name, "description": "", "private": False})
+    result = await run_command(
+        [
+            "curl", "-s", "-X", "POST",
+            f"-H", "Authorization: token {token}",
+            f"-H", "Accept: application/vnd.github.v3+json",
+            f"-d", payload,
+            url,
+        ]
+    )
+    if not result.ok or not result.stdout.strip():
+        return None
+    try:
+        data = json.loads(result.stdout)
+        # If repo was created (has id field), return the clone URL
+        if "id" in data and "name" in data:
+            return f"https://github.com/{username}/{repo_name}.git"
+        # If clone_url is in the response, use it
+        if "clone_url" in data:
+            return data["clone_url"]
+        # If repo already exists (422 error), that's OK - return the URL anyway
+        if "message" in data and "already exists" in data.get("message", "").lower():
+            return f"https://github.com/{username}/{repo_name}.git"
+    except (json.JSONDecodeError, KeyError, ValueError):
+        pass
     return None
 
 
@@ -151,6 +195,17 @@ class PushChangesArgs(BaseModel):
         default=None,
         description="Which branch to push to. If omitted, the current branch is used.",
     )
+    repo_name: str | None = Field(
+        default=None,
+        description="GitHub repo name (e.g. 'skin-analyser', 'jarvis'). "
+        "Only used if the project has no .git repo yet. If omitted and no repo exists, "
+        "you will be asked for it.",
+    )
+    github_username: str | None = Field(
+        default=None,
+        description="Your GitHub username. Only needed if creating a new repo. "
+        "If omitted, uses 'Mohankirushna' (your default).",
+    )
 
 
 class GitHubPushTool(Tool):
@@ -180,21 +235,68 @@ class GitHubPushTool(Tool):
         where = f" in {args.project}" if args.project else ""
         msg = args.message or "(will suggest based on diff)"
         branch = args.branch or "(current branch)"
-        return f"About to push{where} with message '{msg}' to branch {branch}. Confirm?"
+        setup = ""
+        if args.repo_name:
+            username = (args.github_username or "Mohankirushna").strip()
+            setup = f"Create new repo 'github.com/{username}/{args.repo_name}', then "
+        return f"{setup}about to push{where} with message '{msg}' to branch {branch}. Confirm?"
 
     async def run(self, args: PushChangesArgs) -> ToolResult:  # type: ignore[override]
         cwd: Path | None = None
         if args.project:
+            # Try registry first (projects with .git)
             project = await _resolve_project(
                 args.project, self._registry, self._client, self._model_manager, self._settings
             )
-            if project is None:
-                known = ", ".join(p.name for p in await self._registry.list_projects())
-                detail = f" Known local projects: {known}." if known else ""
+            if project is not None:
+                cwd = project.path
+            else:
+                # Check if the folder exists in projects_dir (even without .git)
+                candidate = self._settings.resolved_projects_dir / args.project
+                if candidate.is_dir():
+                    cwd = candidate
+                else:
+                    known = ", ".join(p.name for p in await self._registry.list_projects())
+                    detail = f" Known local projects: {known}." if known else ""
+                    return ToolResult.failure(
+                        self.name, f"Could not find a local project matching '{args.project}'.{detail}"
+                    )
+
+        # Check if this is a git repo; if not, initialize one
+        git_dir = (cwd if cwd else Path.cwd()) / ".git"
+        if not git_dir.exists():
+            if not args.repo_name:
                 return ToolResult.failure(
-                    self.name, f"Could not find a local project matching '{args.project}'.{detail}"
+                    self.name,
+                    "No git repo found. Please provide the GitHub repo name you want to create "
+                    "(e.g., 'jarvis', 'skin-analyser'). Say: 'push [project] to github as [repo-name]'.",
                 )
-            cwd = project.path
+            username = (args.github_username or self._settings.github_username or "Mohankirushna").strip()
+            repo_name = args.repo_name.lower()
+
+            # Try to create repo on GitHub first (if API token is configured)
+            if self._settings.github_token:
+                repo_url = await _create_repo_on_github(
+                    repo_name, username, self._settings.github_token
+                )
+                if repo_url is None:
+                    return ToolResult.failure(
+                        self.name,
+                        f"Could not create repo '{repo_name}' on GitHub. Check the API token or try creating it manually.",
+                    )
+            else:
+                # Fallback: assume standard GitHub URL (repo must be created manually)
+                repo_url = f"https://github.com/{username}/{repo_name}.git"
+
+            # Initialize local repo
+            init_result = await run_command(["git", "init"], cwd=cwd)
+            if not init_result.ok:
+                return ToolResult.failure(self.name, f"git init failed: {init_result.combined()}")
+
+            # Add remote
+            remote_result = await run_command(["git", "remote", "add", "origin", repo_url], cwd=cwd)
+            if not remote_result.ok:
+                return ToolResult.failure(self.name, f"git remote add failed: {remote_result.combined()}")
 
         status = await run_command(["git", "status", "--porcelain"], cwd=cwd)
         if not status.ok:
@@ -217,6 +319,12 @@ class GitHubPushTool(Tool):
         if not commit_result.ok and "nothing to commit" not in commit_result.combined().lower():
             return ToolResult.failure(self.name, f"git commit failed: {commit_result.combined()}")
 
+        # Pull before pushing to handle remote-ahead case
+        pull_result = await run_command(["git", "pull", "origin", branch, "--no-edit"], cwd=cwd)
+        if not pull_result.ok and "no changes to commit" not in pull_result.combined().lower():
+            # Pull failure might be OK if it's just "no changes"
+            pass
+
         push_result = await run_command(["git", "push", "origin", branch], cwd=cwd)
         if not push_result.ok:
             return ToolResult.failure(self.name, f"git push failed: {push_result.combined()}")
@@ -230,6 +338,166 @@ class GitHubPushTool(Tool):
             tool=self.name, ok=True,
             summary=f"Pushed '{message}' to {branch} and opened GitHub.",
             data={"branch": branch, "message": message, "status": "pushed"},
+        )
+
+
+class LocateProjectArgs(BaseModel):
+    project: str = Field(description="Project name or keyword (e.g., 'fitness', 'skin', 'jarvis').")
+
+
+class LocateProjectTool(Tool):
+    name: ClassVar[str] = "locate_project"
+    description: ClassVar[str] = (
+        "Answer where a local project lives and its GitHub status. Use for "
+        "'where is the fitness project', 'what's the local path for skin', "
+        "'give me the folder path for X', or 'is jarvis on github'. Returns the "
+        "absolute folder path, whether it's a git repo, and its GitHub URL."
+    )
+    args_model: ClassVar[type[BaseModel]] = LocateProjectArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SAFE
+
+    def __init__(
+        self,
+        registry: ProjectRegistry,
+        client: OllamaLike,
+        model_manager: ModelManager,
+        settings: Settings | None = None,
+    ) -> None:
+        self._registry = registry
+        self._client = client
+        self._model_manager = model_manager
+        self._settings = settings or get_settings()
+
+    async def run(self, args: LocateProjectArgs) -> ToolResult:  # type: ignore[override]
+        # A git repo the registry already knows about is the richest answer.
+        project = await _resolve_project(
+            args.project, self._registry, self._client, self._model_manager, self._settings
+        )
+        if project is not None:
+            if project.remote_url:
+                git_note = f"It's on GitHub at {project.remote_url}."
+            elif project.is_git:
+                git_note = "It's a git repo but has no GitHub remote yet."
+            else:
+                git_note = "It's not a git repo yet."
+            return ToolResult(
+                tool=self.name, ok=True,
+                summary=f"{project.name} is at {project.path}. {git_note}",
+                data={
+                    "project": project.name,
+                    "path": str(project.path),
+                    "is_git": project.is_git,
+                    "remote_url": project.remote_url,
+                },
+            )
+
+        # Not indexed — maybe an exact folder name that scanning just missed.
+        candidate = self._settings.resolved_projects_dir / args.project
+        if candidate.is_dir():
+            return ToolResult(
+                tool=self.name, ok=True,
+                summary=f"{args.project} is at {candidate}. It's not a git repo yet.",
+                data={
+                    "project": args.project,
+                    "path": str(candidate),
+                    "is_git": (candidate / ".git").exists(),
+                    "remote_url": None,
+                },
+            )
+
+        known = ", ".join(p.name for p in await self._registry.list_projects())
+        detail = (
+            f" Known projects: {known}." if known
+            else f" No projects found under {self._registry.root}."
+        )
+        return ToolResult.failure(
+            self.name, f"I couldn't find a project matching '{args.project}'.{detail}"
+        )
+
+
+class DeleteRepoArgs(BaseModel):
+    project: str = Field(description="Project name (e.g., 'fitness', 'jarvis').")
+
+
+class GitHubDeleteRepoTool(Tool):
+    name: ClassVar[str] = "github_delete_repo"
+    description: ClassVar[str] = (
+        "Delete a GitHub repository. Use for 'delete the fitness repo', "
+        "'remove this project from github'. Requires confirmation and a valid "
+        "GitHub API token."
+    )
+    args_model: ClassVar[type[BaseModel]] = DeleteRepoArgs
+    risk_level: ClassVar[RiskLevel] = RiskLevel.SENSITIVE
+
+    def __init__(
+        self,
+        registry: ProjectRegistry,
+        client: OllamaLike,
+        model_manager: ModelManager,
+        settings: Settings | None = None,
+    ) -> None:
+        self._registry = registry
+        self._client = client
+        self._model_manager = model_manager
+        self._settings = settings or get_settings()
+
+    def confirmation_action(self, args: DeleteRepoArgs) -> str | None:
+        """Show what will be deleted before proceeding."""
+        return f"Delete the GitHub repository for '{args.project}'? This cannot be undone."
+
+    async def run(self, args: DeleteRepoArgs) -> ToolResult:  # type: ignore[override]
+        if not self._settings.github_token:
+            return ToolResult.failure(
+                self.name, "GitHub API token not configured. Set JARVIS_GITHUB_TOKEN to delete repos."
+            )
+
+        project = await _resolve_project(
+            args.project, self._registry, self._client, self._model_manager, self._settings
+        )
+        if project is None or project.remote_url is None:
+            return ToolResult.failure(
+                self.name,
+                f"Project '{args.project}' not found or has no GitHub remote. "
+                "Cannot delete a repo that isn't on GitHub.",
+            )
+
+        # Parse owner/repo from the remote URL (https://github.com/owner/repo)
+        match = re.match(r"https://github\.com/([^/]+)/([^/]+)/?$", project.remote_url)
+        if not match:
+            return ToolResult.failure(
+                self.name, f"Could not parse GitHub URL: {project.remote_url}"
+            )
+        owner, repo_name = match.groups()
+
+        # Delete via GitHub API
+        url = f"https://api.github.com/repos/{owner}/{repo_name}"
+        headers = {
+            "Authorization": f"token {self._settings.github_token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        async with httpx.AsyncClient(timeout=10) as http_client:
+            response = await http_client.delete(url, headers=headers)
+
+        if response.status_code == 404:
+            return ToolResult.failure(
+                self.name, f"Repository '{repo_name}' not found on GitHub (already deleted?)."
+            )
+        if response.status_code == 403:
+            return ToolResult.failure(
+                self.name,
+                "Permission denied. Check that the GitHub token has 'repo' scope and "
+                "you own the repository.",
+            )
+        if not (200 <= response.status_code < 300):
+            return ToolResult.failure(
+                self.name,
+                f"GitHub API error ({response.status_code}): {response.text[:200]}",
+            )
+
+        return ToolResult(
+            tool=self.name, ok=True,
+            summary=f"Deleted '{repo_name}' from GitHub. The local folder remains.",
+            data={"repo": repo_name, "owner": owner, "status": "deleted"},
         )
 
 

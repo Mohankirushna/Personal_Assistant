@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     # never hardcoded — so this only requires the folder to exist.
     projects_dir: Path = Path("~/Downloads/projects")
 
+    # GitHub API for auto-creating repos (github_push tool).
+    # Token must have 'repo' scope. Generate at https://github.com/settings/tokens.
+    github_token: str | None = None
+    github_username: str | None = None
+
     log_level: str = "INFO"
 
     @field_validator("host")

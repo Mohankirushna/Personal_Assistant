@@ -380,6 +380,79 @@ _BRIGHTNESS_ADJUST = re.compile(
     r"(?: by (?P<amount>\d{1,3})(?: ?percent)?)?$"
 )
 
+# "where is the X project", "path for X", "locate the X repo" — a question
+# about a LOCAL project's location, never a web search. This MUST be matched
+# before the live-info/general-knowledge web routing below, because a project
+# named with a trigger word ("stocks", "news") would otherwise be web-searched
+# ("where is the stocks project" starts with "where" and contains "stocks").
+_LOCATE_PROJECT_PATTERNS = [
+    re.compile(
+        r"^(?:where is|wheres|where)\s+(?:the\s+)?(?P<name>.+?)\s+"
+        r"(?:project|repo|repository|folder|directory)(?:\s+(?:located|at))?$"
+    ),
+    re.compile(
+        r"^locate\s+(?:the\s+)?(?P<name>.+?)\s+"
+        r"(?:project|repo|repository|folder|directory)$"
+    ),
+    re.compile(
+        r"^(?:give me\s+|tell me\s+)?(?:the\s+)?(?:local\s+|folder\s+|file\s+)?"
+        r"(?:path|location)\s+(?:for|of|to)\s+(?:the\s+)?(?P<name>.+?)"
+        r"(?:\s+(?:project|repo|repository|folder))?$"
+    ),
+    re.compile(
+        r"^what(?:s| is)?\s+(?:the\s+)?(?:local\s+|folder\s+|file\s+)?"
+        r"(?:path|location)\s+(?:for|of|to)\s+(?:the\s+)?(?P<name>.+?)"
+        r"(?:\s+(?:project|repo|repository|folder))?$"
+    ),
+]
+
+
+def _match_locate_project(normalized: str) -> str | None:
+    """Return the project name for a 'where is X project' question, else None."""
+    for pattern in _LOCATE_PROJECT_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            name = re.sub(r"^(?:the|my|a)\s+", "", name).strip()
+            name = re.sub(
+                r"\s+(?:project|repo|repository|folder|directory)$", "", name
+            ).strip()
+            if name:
+                return name
+    return None
+
+
+# "delete the X repo", "remove X from github" — a destructive action that requires
+# the planner to route to a tool with explicit confirmation, never a chat answer.
+_DELETE_REPO_PATTERNS = [
+    re.compile(
+        r"^(?:delete|remove)\s+(?:the\s+)?(?:github\s+)?repo(?:sitory)?\s+for\s+"
+        r"(?:the\s+)?(?P<name>.+?)(?:\s+(?:on|from)\s+github)?$"
+    ),
+    re.compile(
+        r"^(?:delete|remove)\s+(?P<name>.+?)\s+(?:from|on)\s+github$"
+    ),
+    re.compile(
+        r"^(?:delete|remove)\s+(?:the\s+)?(?P<name>.+?)\s+repo(?:sitory)?$"
+    ),
+]
+
+
+def _match_delete_repo(normalized: str) -> str | None:
+    """Return the project name for a 'delete X repo' command, else None."""
+    for pattern in _DELETE_REPO_PATTERNS:
+        match = pattern.fullmatch(normalized)
+        if match:
+            name = match.group("name").strip()
+            name = re.sub(r"^(?:the|my|a|github)\s+", "", name).strip()
+            name = re.sub(
+                r"\s+(?:repo|repository|project|github)?$", "", name
+            ).strip()
+            if name:
+                return name
+    return None
+
+
 _TRAILING_BROWSER = re.compile(
     r"^(?P<query>.+?) (?:in|on|using|with) "
     r"(?P<browser>brave|google chrome|chrome|safari|firefox)$"
@@ -430,6 +503,15 @@ def match_fast_intent(utterance: str) -> ToolCallRequest | None:
             name="finder_list",
             arguments={"path": _KNOWN_FOLDERS[folder_name.group("folder")]},
         )
+    # Project-location questions before any web routing (a project named
+    # "stocks"/"news" would otherwise trip the live-info web search).
+    locate_name = _match_locate_project(normalized)
+    if locate_name:
+        return ToolCallRequest(name="locate_project", arguments={"project": locate_name})
+    # Delete-repo commands are destructive and require tool routing (for confirmation).
+    delete_name = _match_delete_repo(normalized)
+    if delete_name:
+        return ToolCallRequest(name="github_delete_repo", arguments={"project": delete_name})
     timer_result = _match_timer(normalized)
     if timer_result:
         minutes, label = timer_result
