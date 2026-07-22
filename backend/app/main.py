@@ -112,6 +112,18 @@ def create_app(
             vision_service = VisionService(client, model_manager, app_settings)
             tool_registry.register(LookAtScreenTool(vision_service))
 
+            from app.core.project_registry import ProjectRegistry
+            from app.tools.github import GitHubOpenRepoTool, GitHubPushTool, RefreshProjectsTool
+
+            project_registry = ProjectRegistry(app_settings.resolved_projects_dir)
+            tool_registry.register(
+                GitHubOpenRepoTool(project_registry, client, model_manager, app_settings)
+            )
+            tool_registry.register(
+                GitHubPushTool(project_registry, client, model_manager, app_settings)
+            )
+            tool_registry.register(RefreshProjectsTool(project_registry))
+
             if _browser_imports_available():
                 from app.tools.browser.browser import (
                     BrowserDownloadTool,

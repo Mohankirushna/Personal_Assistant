@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     briefing_news_locale: str = "en-IN"
     briefing_news_country: str = "IN"
 
+    # Folder whose immediate subdirectories are scanned for local git repos
+    # (github_open_repo / github_push resolve project names against these).
+    # Each repo's real GitHub URL is read from its own 'origin' remote —
+    # never hardcoded — so this only requires the folder to exist.
+    projects_dir: Path = Path("~/Downloads/projects")
+
     log_level: str = "INFO"
 
     @field_validator("host")
@@ -143,6 +149,10 @@ class Settings(BaseSettings):
     @property
     def resolved_data_dir(self) -> Path:
         return self.data_dir.expanduser()
+
+    @property
+    def resolved_projects_dir(self) -> Path:
+        return self.projects_dir.expanduser()
 
     @property
     def sqlite_path(self) -> Path:
