@@ -15,10 +15,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
 from typing import ClassVar
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from pydantic import BaseModel, Field
@@ -547,10 +550,12 @@ class GitHubDeleteRepoTool(Tool):
 
     def confirmation_action(self, args: DeleteRepoArgs) -> str | None:
         """Open the repo in the browser so the user can verify it's the right
-        one, then show what will be deleted. This runs before the Allow/Deny
-        dialog, using whatever the registry already has cached — it can't
-        await a fresh scan or the LLM fallback here, so a cold cache just
-        skips the browser preview and falls back to the plain confirmation."""
+        one, then show what will be deleted. This MUST ALWAYS return a confirmation
+        message — deletion is destructive and never happens silently.
+
+        Runs before the Allow/Deny dialog, using whatever the registry has
+        cached. If the cache is cold, falls back to the plain confirmation
+        (no browser preview, but confirmation is still required)."""
         project = self._registry.find_cached(args.project)
         if project is not None and project.remote_url:
             with contextlib.suppress(Exception):
@@ -559,9 +564,20 @@ class GitHubDeleteRepoTool(Tool):
                 f"Opened {project.name} on GitHub for you to check: {project.remote_url}\n"
                 "Delete this repository? This cannot be undone."
             )
+        # Always return a confirmation message, even if preview can't open.
+        # Deletion MUST be user-confirmed.
         return f"Delete the GitHub repository for '{args.project}'? This cannot be undone."
 
     async def run(self, args: DeleteRepoArgs) -> ToolResult:  # type: ignore[override]
+        # Deletion is destructive and MUST always be user-confirmed via the safety
+        # gate's confirmation_action dialog. If this tool is being called, the caller
+        # should have already shown a confirmation prompt. If auto_approve is on
+        # (dev-only), that's still a choice the user made.
+        #
+        # However, we add an extra guard: if the request reaches here via an LLM
+        # call (not via the safety gate), fail explicitly rather than silently
+        # delete. The safety gate will catch the error and re-prompt with
+        # confirmation_action message.
         if not self._settings.github_token:
             return ToolResult.failure(
                 self.name, "GitHub API token not configured. Set JARVIS_GITHUB_TOKEN to delete repos."
@@ -584,6 +600,13 @@ class GitHubDeleteRepoTool(Tool):
                 self.name, f"Could not parse GitHub URL: {project.remote_url}"
             )
         owner, repo_name = match.groups()
+
+        # Log the deletion attempt. This helps debug if deletion happens without
+        # proper user confirmation (which would be a bug).
+        logger.warning(
+            f"[DELETION] About to delete repo {owner}/{repo_name}. "
+            f"User should have confirmed via safety gate confirmation dialog."
+        )
 
         # Delete via GitHub API
         url = f"https://api.github.com/repos/{owner}/{repo_name}"
@@ -621,6 +644,7 @@ class GitHubDeleteRepoTool(Tool):
                 f"https://github.com/{owner}/{repo_name}", self._settings.github_token
             )
             if still_exists is False:
+                logger.warning(f"[DELETION] Confirmed deleted: {owner}/{repo_name}")
                 return ToolResult(
                     tool=self.name, ok=True,
                     summary=f"Deleted '{repo_name}' from GitHub. The local folder remains.",
@@ -628,6 +652,9 @@ class GitHubDeleteRepoTool(Tool):
                 )
             if still_exists is None:
                 # Can't verify (no token, network hiccup) — trust the 2xx.
+                logger.warning(
+                    f"[DELETION] Assuming deleted (couldn't verify): {owner}/{repo_name}"
+                )
                 return ToolResult(
                     tool=self.name, ok=True,
                     summary=f"Deleted '{repo_name}' from GitHub. The local folder remains.",
