@@ -545,14 +545,17 @@ def _match_open_project(normalized: str) -> str | None:
 # missing its required `arguments`/`repo`). Matching this deterministically
 # removes the ambiguity entirely for the common phrasing.
 _PUSH_REPO_PATTERNS = [
+    # "push fitness to github", "push fitness app into github", "push the
+    # jarvis project onto github as jarvis-app". Accept to/into/onto/up to so a
+    # slightly different preposition doesn't drop to the (unreliable) LLM.
     re.compile(
-        r"^push\s+(?:the\s+)?(?P<name>.+?)\s+(?:project\s+)?to\s+github"
-        r"(?:\s+as\s+(?P<repo>.+))?$"
+        r"^push\s+(?:the\s+)?(?P<name>.+?)\s+(?:project\s+)?"
+        r"(?:to|into|onto|up\s+to)\s+github(?:\s+as\s+(?P<repo>.+))?$"
     ),
     # "create a repo and push fitness project", "create repo and push fitness to github"
     re.compile(
         r"^create\s+(?:a\s+)?repo(?:sitory)?\s+(?:and\s+)?push\s+(?:the\s+)?(?P<name>.+?)"
-        r"(?:\s+(?:project|repo))?(?:\s+to\s+github)?(?:\s+as\s+(?P<repo>.+))?$"
+        r"(?:\s+(?:project|repo))?(?:\s+(?:to|into|onto)\s+github)?(?:\s+as\s+(?P<repo>.+))?$"
     ),
 ]
 

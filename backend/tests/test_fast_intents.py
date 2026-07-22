@@ -816,6 +816,11 @@ def test_bare_reference_words_never_become_a_fake_project_name(utterance: str) -
         ("create repo and push fitness", "fitness", None),
         ("create a repo and push fitness to github", "fitness", None),
         ("create a repo and push fitness project as fitness-app", "fitness", "fitnessapp"),
+        # "into"/"onto" prepositions — these dropped to the LLM before, which
+        # then failed to recreate a deleted remote / push. Must route here.
+        ("push fitness app into github", "fitness app", None),
+        ("push fitness into github", "fitness", None),
+        ("push fitness onto github", "fitness", None),
     ],
 )
 def test_push_repo_commands_route_to_github_push(
