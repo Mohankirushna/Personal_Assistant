@@ -80,9 +80,9 @@ async def _create_repo_on_github(
     result = await run_command(
         [
             "curl", "-s", "-X", "POST",
-            f"-H", "Authorization: token {token}",
-            f"-H", "Accept: application/vnd.github.v3+json",
-            f"-d", payload,
+            "-H", f"Authorization: token {token}",
+            "-H", "Accept: application/vnd.github.v3+json",
+            "-d", payload,
             url,
         ]
     )
