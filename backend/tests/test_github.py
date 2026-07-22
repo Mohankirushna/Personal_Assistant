@@ -642,7 +642,51 @@ async def test_delete_repo_requires_github_token(tmp_path: Path) -> None:
     assert "token" in result.summary.lower()
 
 
+async def test_delete_repo_never_fuzzy_matches_a_different_project(
+    tmp_path: Path,
+) -> None:
+    """THE incident: deleting 'jarvis-delete-test' resolved via loose keyword
+    scoring to the unrelated 'jarvis_v2' project (shared 'jarvis' token) and
+    deleted ITS repo. Strict resolution must refuse when the requested name
+    doesn't exactly match a project's folder or GitHub repo name — never
+    delete a different repo."""
+    _make_repo(tmp_path, "jarvis_v2", "https://github.com/me/Personal_Assistant.git")
+    registry = ProjectRegistry(tmp_path)
+    settings = Settings(_env_file=None, projects_dir=tmp_path, github_token="t")
+    fake = FakeOllamaClient()
+    manager = ModelManager(fake, settings)
+
+    tool = GitHubDeleteRepoTool(registry, fake, manager, settings)
+    result = await tool.run(DeleteRepoArgs(project="jarvis-delete-test"))
+
+    assert not result.ok
+    assert "refusing to guess" in result.summary.lower()
+    # The one real repo must be surfaced so the user can retry precisely,
+    # but it must NOT have been selected for deletion.
+    assert "personal_assistant" in result.summary.lower()
+
+
+async def test_delete_repo_matches_by_exact_repo_name(tmp_path: Path) -> None:
+    """'delete fitness-app' resolves by the GitHub repo name even though the
+    local folder is called 'fitness' — an exact match on either is enough."""
+    _make_repo(tmp_path, "fitness", "https://github.com/me/fitness-app.git")
+    registry = ProjectRegistry(tmp_path)
+    await registry.refresh()
+    projects = await registry.list_projects()
+
+    project, why = github_module._resolve_project_for_deletion("fitness-app", projects)
+    assert project is not None, why
+    assert project.name == "fitness"
+
+    # And by the folder name too.
+    project2, _ = github_module._resolve_project_for_deletion("fitness", projects)
+    assert project2 is not None and project2.name == "fitness"
+
+
 async def test_delete_repo_requires_github_remote(tmp_path: Path) -> None:
+    # A project with no GitHub remote is not a deletable candidate. Strict
+    # resolution considers only GitHub-linked projects, so this refuses rather
+    # than trying to delete something that isn't on GitHub.
     _make_repo(tmp_path, "fitness", remote=None)
     registry = ProjectRegistry(tmp_path)
     settings = Settings(
@@ -655,7 +699,7 @@ async def test_delete_repo_requires_github_remote(tmp_path: Path) -> None:
     result = await tool.run(DeleteRepoArgs(project="fitness"))
 
     assert not result.ok
-    assert "no github remote" in result.summary.lower()
+    assert "no repo clearly named" in result.summary.lower()
 
 
 class _DeleteVerifyClient:
@@ -813,4 +857,4 @@ async def test_delete_repo_confirmation_no_browser_when_cache_cold(
     preview = tool.confirmation_action(DeleteRepoArgs(project="fitness"))
 
     assert opened == []
-    assert preview == "Delete the GitHub repository for 'fitness'? This cannot be undone."
+    assert preview == "Delete the GitHub repository named 'fitness'? This cannot be undone."

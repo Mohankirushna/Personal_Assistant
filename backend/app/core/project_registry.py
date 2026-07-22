@@ -103,6 +103,12 @@ class ProjectRegistry:
             await self.refresh()
         return list(self._projects.values())
 
+    def cached_projects(self) -> list[ProjectInfo]:
+        """Synchronous view of whatever is already cached (no scan). Empty
+        before the first scan. For callers that can't await, e.g. a tool's
+        confirmation_action building its preview."""
+        return list(self._projects.values())
+
     async def find(self, query: str) -> ProjectInfo | None:
         """Best keyword match for the query, or None.
 

@@ -70,6 +70,60 @@ async def _resolve_project(
     return None
 
 
+def _repo_name_from_remote(remote_url: str) -> str | None:
+    """Extract the GitHub repo name (last path segment) from a remote URL."""
+    m = re.match(r"https://github\.com/[^/]+/([^/]+?)/?$", remote_url)
+    return m.group(1) if m else None
+
+
+def _norm(text: str) -> str:
+    """Lowercase and strip everything but alphanumerics, so 'fitness-app',
+    'fitness_app' and 'Fitness App' all compare equal."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _resolve_project_for_deletion(
+    requested: str, projects: list[ProjectInfo]
+) -> tuple[ProjectInfo | None, str]:
+    """Strictly resolve which project's repo to DELETE.
+
+    Deletion is irreversible, so this refuses to fuzzy-guess (the loose
+    keyword scoring used elsewhere once matched 'jarvis-delete-test' to the
+    unrelated 'jarvis_v2' project and deleted the wrong repo). A candidate
+    qualifies ONLY if the requested name equals — after normalization — its
+    folder name OR its GitHub repo name. Returns (project, "") on a single
+    confident match, else (None, <message listing what the user could mean>).
+    """
+    want = _norm(requested)
+    on_github = [p for p in projects if p.remote_url]
+    matches: list[ProjectInfo] = []
+    for p in on_github:
+        repo = _repo_name_from_remote(p.remote_url or "")
+        if want and (_norm(p.name) == want or (repo and _norm(repo) == want)):
+            matches.append(p)
+
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        opts = ", ".join(
+            f"{_repo_name_from_remote(p.remote_url or '') or p.name}" for p in matches
+        )
+        return None, (
+            f"Several repos match '{requested}': {opts}. "
+            "Say the exact repo name to delete."
+        )
+    # No exact match. List the real GitHub repo names so the user can retry
+    # precisely — never auto-pick a loose keyword match for a destructive op.
+    available = ", ".join(
+        sorted(_repo_name_from_remote(p.remote_url or "") or p.name for p in on_github)
+    )
+    hint = f" Your GitHub-linked repos: {available}." if available else ""
+    return None, (
+        f"No repo clearly named '{requested}' found — refusing to guess for a "
+        f"deletion.{hint}"
+    )
+
+
 async def _create_repo_on_github(
     repo_name: str, username: str, token: str
 ) -> str | None:
@@ -553,24 +607,30 @@ class GitHubDeleteRepoTool(Tool):
         self._settings = settings or get_settings()
 
     def confirmation_action(self, args: DeleteRepoArgs) -> str | None:
-        """Open the repo in the browser so the user can verify it's the right
-        one, then show what will be deleted. This MUST ALWAYS return a confirmation
-        message — deletion is destructive and never happens silently.
+        """Show EXACTLY what will be deleted, and never a wrong repo.
 
-        Runs before the Allow/Deny dialog, using whatever the registry has
-        cached. If the cache is cold, falls back to the plain confirmation
-        (no browser preview, but confirmation is still required)."""
-        project = self._registry.find_cached(args.project)
+        Uses the same STRICT resolution as run() (against the cached project
+        list) so the preview can't point at an unrelated repo the way loose
+        keyword matching once did. Only opens the browser / names a specific
+        repo when that strict match is certain; otherwise it asks plainly and
+        lets run() do the authoritative (refreshed) resolution. Always returns
+        a message — deletion is destructive and never happens silently."""
+        projects = self._registry.cached_projects()
+        project, _why = _resolve_project_for_deletion(args.project, projects)
         if project is not None and project.remote_url:
+            repo = _repo_name_from_remote(project.remote_url) or project.name
             with contextlib.suppress(Exception):
                 subprocess.Popen(["open", project.remote_url])
             return (
-                f"Opened {project.name} on GitHub for you to check: {project.remote_url}\n"
-                "Delete this repository? This cannot be undone."
+                f"Opened '{repo}' on GitHub for you to check: {project.remote_url}\n"
+                f"Delete the repository '{repo}'? This cannot be undone."
             )
-        # Always return a confirmation message, even if preview can't open.
-        # Deletion MUST be user-confirmed.
-        return f"Delete the GitHub repository for '{args.project}'? This cannot be undone."
+        # No certain match in cache — ask about the requested name without
+        # opening or naming a possibly-wrong repo. run() re-resolves strictly.
+        return (
+            f"Delete the GitHub repository named '{args.project}'? "
+            "This cannot be undone."
+        )
 
     async def run(self, args: DeleteRepoArgs) -> ToolResult:  # type: ignore[override]
         # Deletion is destructive and MUST always be user-confirmed via the safety
@@ -587,18 +647,17 @@ class GitHubDeleteRepoTool(Tool):
                 self.name, "GitHub API token not configured. Set JARVIS_GITHUB_TOKEN to delete repos."
             )
 
-        project = await _resolve_project(
-            args.project, self._registry, self._client, self._model_manager, self._settings
-        )
+        # Refresh first so a just-created/renamed project is seen: a stale cache
+        # is exactly what let a deletion resolve to the wrong (old) project.
+        await self._registry.refresh()
+        projects = await self._registry.list_projects()
+        # STRICT resolution — never fuzzy-guess which repo to destroy.
+        project, why = _resolve_project_for_deletion(args.project, projects)
         if project is None or project.remote_url is None:
-            return ToolResult.failure(
-                self.name,
-                f"Project '{args.project}' not found or has no GitHub remote. "
-                "Cannot delete a repo that isn't on GitHub.",
-            )
+            return ToolResult.failure(self.name, why or f"'{args.project}' not found.")
 
         # Parse owner/repo from the remote URL (https://github.com/owner/repo)
-        match = re.match(r"https://github\.com/([^/]+)/([^/]+)/?$", project.remote_url)
+        match = re.match(r"https://github\.com/([^/]+)/([^/]+?)/?$", project.remote_url)
         if not match:
             return ToolResult.failure(
                 self.name, f"Could not parse GitHub URL: {project.remote_url}"
